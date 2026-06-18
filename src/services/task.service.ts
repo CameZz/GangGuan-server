@@ -22,17 +22,77 @@ interface CreateTaskParams {
   priority: TaskPriority
   dueDate?: string | null
   assigneeId?: string | null
+  references?: UpdateReferenceParams[]
+  comments?: UpdateCommentParams[]
 }
 
 // 更新任务参数
 interface UpdateTaskParams {
   title?: string
   description?: string
+  status?: TaskStatus
   priority?: TaskPriority
   dueDate?: string | null
   assigneeId?: string | null
   planningId?: string | null
   parentRequirementId?: string | null
+  stage?: TaskStage
+  currentPhaseId?: string | null
+  phases?: UpdateTaskPhaseParams[]
+  references?: UpdateReferenceParams[]
+  comments?: UpdateCommentParams[]
+}
+
+interface UpdateReferenceParams {
+  id?: string
+  type?: string
+  url?: string
+  title?: string
+}
+
+interface UpdateCommentParams {
+  id?: string
+  authorId?: string
+  content?: string
+  createdAt?: string | Date | null
+}
+
+interface UpdateTaskPhaseParams {
+  id?: string
+  templateId?: string
+  name?: string
+  order?: number
+  assigneeId?: string | null
+  progress?: number
+  status?: TaskPhaseStatus
+  startTime?: string | Date | null
+  endTime?: string | Date | null
+}
+
+type NormalizedTaskPhaseInput = {
+  id: string
+  templateId: string
+  name: string
+  order: number
+  assigneeId: string | null
+  progress: number
+  status: TaskPhaseStatus
+  startTime: Date | null
+  endTime: Date | null
+}
+
+type NormalizedReferenceInput = {
+  id: string
+  type: string
+  url: string
+  title: string
+}
+
+type NormalizedCommentInput = {
+  id: string
+  authorId: string
+  content: string
+  createdAt: Date | undefined
 }
 
 // 包含关联数据的任务类型
@@ -84,6 +144,8 @@ export class TaskService {
   // 创建任务
   async create(data: CreateTaskParams, operatorId?: string): Promise<TaskWithRelations> {
     const { projectId, planningId, itemType, parentRequirementId, title, description, priority, dueDate, assigneeId } = data
+    const references = this.normalizeReferenceInputs(data.references)
+    const comments = this.normalizeCommentInputs(data.comments, operatorId)
 
     // 获取项目的阶段模板
     const phaseTemplates = await prisma.projectPhaseTemplate.findMany({
@@ -107,7 +169,13 @@ export class TaskService {
           stage: 'filed',
           currentPhaseId: null,
           projectId,
-          planningId: planningId || null
+          planningId: planningId || null,
+          references: {
+            create: references
+          },
+          comments: {
+            create: comments
+          }
         },
         include: {
           phases: true,
@@ -150,6 +218,12 @@ export class TaskService {
         currentPhaseId: currentPhase?.id || null,
         projectId,
         planningId: planningId || null,
+        references: {
+          create: references
+        },
+        comments: {
+          create: comments
+        },
         // 创建关联的阶段
         phases: {
           create: phases.map(phase => ({
@@ -182,29 +256,179 @@ export class TaskService {
       throw new Error('任务不存在')
     }
 
+    const isRequirement = existingTask.itemType === 'requirement'
+    const phases = isRequirement
+      ? []
+      : data.phases !== undefined
+        ? this.normalizeTaskPhaseInputs(data.phases)
+        : existingTask.phases
+    const currentPhase = this.getCurrentPhase(phases as TaskPhase[])
+    const statusChanged = data.status !== undefined && data.status !== existingTask.status
+    const nextStatus = isRequirement
+      ? 'todo'
+      : statusChanged
+        ? data.status!
+        : data.phases !== undefined
+          ? this.deriveStatusFromPhases(phases as TaskPhase[], (data.status || existingTask.status) as TaskStatus)
+          : (data.status || existingTask.status) as TaskStatus
+    const nextStage = isRequirement
+      ? 'filed'
+      : data.phases !== undefined
+        ? this.deriveStageFromPhase(currentPhase as TaskPhase | null)
+        : (data.stage || existingTask.stage) as TaskStage
+    const nextCurrentPhaseId = isRequirement
+      ? null
+      : data.phases !== undefined
+        ? currentPhase?.id || null
+        : data.currentPhaseId
+    const nextAssigneeId = isRequirement
+      ? null
+      : data.phases !== undefined
+        ? currentPhase?.assigneeId || null
+        : data.assigneeId
+    const references = data.references !== undefined ? this.normalizeReferenceInputs(data.references) : null
+    const comments = data.comments !== undefined ? this.normalizeCommentInputs(data.comments, operatorId) : null
+
     // 记录历史
     if (operatorId) {
       await this.recordHistory(id, data, existingTask, operatorId)
+      if (!isRequirement && data.phases !== undefined) {
+        await this.recordProgressHistories(id, existingTask.phases, phases as NormalizedTaskPhaseInput[], operatorId)
+      }
     }
 
-    // 更新任务
-    const task = await prisma.task.update({
-      where: { id },
-      data: {
-        title: data.title,
-        description: data.description,
-        priority: data.priority,
-        dueDate: data.dueDate ? new Date(data.dueDate) : undefined,
-        assigneeId: data.assigneeId,
-        planningId: data.planningId,
-        parentRequirementId: data.parentRequirementId,
-        updatedAt: new Date()
-      },
-      include: {
-        phases: { orderBy: { order: 'asc' } },
-        references: true,
-        comments: true
+    const task = await prisma.$transaction(async tx => {
+      if (data.phases !== undefined || isRequirement) {
+        const incomingPhaseIds = new Set(phases.map(phase => phase.id))
+
+        await tx.taskPhase.deleteMany({
+          where: {
+            taskId: id,
+            id: { notIn: [...incomingPhaseIds] }
+          }
+        })
+
+        const existingPhaseIds = new Set(existingTask.phases.map(phase => phase.id))
+        for (const phase of phases as NormalizedTaskPhaseInput[]) {
+          const phaseData = {
+            templateId: phase.templateId,
+            name: phase.name,
+            order: phase.order,
+            progress: phase.progress,
+            status: phase.status,
+            startTime: phase.startTime,
+            endTime: phase.endTime,
+            assigneeId: phase.assigneeId
+          }
+
+          if (existingPhaseIds.has(phase.id)) {
+            await tx.taskPhase.update({
+              where: { id: phase.id },
+              data: phaseData
+            })
+          } else {
+            await tx.taskPhase.create({
+              data: {
+                id: phase.id,
+                taskId: id,
+                ...phaseData
+              }
+            })
+          }
+        }
       }
+
+      if (references) {
+        const incomingReferenceIds = new Set(references.map(reference => reference.id))
+
+        await tx.reference.deleteMany({
+          where: {
+            taskId: id,
+            id: { notIn: [...incomingReferenceIds] }
+          }
+        })
+
+        const existingReferenceIds = new Set(existingTask.references.map(reference => reference.id))
+        for (const reference of references) {
+          const referenceData = {
+            type: reference.type,
+            url: reference.url,
+            title: reference.title
+          }
+
+          if (existingReferenceIds.has(reference.id)) {
+            await tx.reference.update({
+              where: { id: reference.id },
+              data: referenceData
+            })
+          } else {
+            await tx.reference.create({
+              data: {
+                id: reference.id,
+                taskId: id,
+                ...referenceData
+              }
+            })
+          }
+        }
+      }
+
+      if (comments) {
+        const incomingCommentIds = new Set(comments.map(comment => comment.id))
+
+        await tx.comment.deleteMany({
+          where: {
+            taskId: id,
+            id: { notIn: [...incomingCommentIds] }
+          }
+        })
+
+        const existingCommentIds = new Set(existingTask.comments.map(comment => comment.id))
+        for (const comment of comments) {
+          const commentData = {
+            authorId: comment.authorId,
+            content: comment.content,
+            createdAt: comment.createdAt
+          }
+
+          if (existingCommentIds.has(comment.id)) {
+            await tx.comment.update({
+              where: { id: comment.id },
+              data: commentData
+            })
+          } else {
+            await tx.comment.create({
+              data: {
+                id: comment.id,
+                taskId: id,
+                ...commentData
+              }
+            })
+          }
+        }
+      }
+
+      return tx.task.update({
+        where: { id },
+        data: {
+          title: data.title,
+          description: data.description,
+          status: nextStatus,
+          priority: data.priority,
+          dueDate: data.dueDate === undefined ? undefined : this.toNullableDate(data.dueDate),
+          assigneeId: nextAssigneeId,
+          planningId: data.planningId,
+          parentRequirementId: isRequirement ? null : data.parentRequirementId,
+          stage: nextStage,
+          currentPhaseId: nextCurrentPhaseId,
+          updatedAt: new Date()
+        },
+        include: {
+          phases: { orderBy: { order: 'asc' } },
+          references: true,
+          comments: true
+        }
+      })
     })
 
     return task
@@ -351,6 +575,56 @@ export class TaskService {
     return 'in-progress'
   }
 
+  private normalizeTaskPhaseInputs(phases: UpdateTaskPhaseParams[] = []): NormalizedTaskPhaseInput[] {
+    return [...phases]
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+      .map((phase, index) => {
+        const progress = Math.max(0, Math.min(100, Math.round(Number(phase.progress ?? 0))))
+        const id = phase.id || generateId()
+        return {
+          id,
+          templateId: phase.templateId || id,
+          name: phase.name || `Phase ${index + 1}`,
+          order: Number.isFinite(phase.order) ? phase.order! : index,
+          assigneeId: phase.assigneeId || null,
+          progress,
+          status: this.getPhaseStatus(progress),
+          startTime: this.toNullableDate(phase.startTime) ?? null,
+          endTime: this.toNullableDate(phase.endTime) ?? null
+        }
+      })
+      .sort((a, b) => a.order - b.order)
+      .map((phase, index) => ({ ...phase, order: index }))
+  }
+
+  private toNullableDate(value: string | Date | null | undefined): Date | null | undefined {
+    if (value === undefined) return undefined
+    if (value === null || value === '') return null
+    return value instanceof Date ? value : new Date(value)
+  }
+
+  private normalizeReferenceInputs(references: UpdateReferenceParams[] = []): NormalizedReferenceInput[] {
+    return references
+      .map(reference => ({
+        id: reference.id || generateId(),
+        type: reference.type || 'link',
+        url: (reference.url || '').trim(),
+        title: (reference.title || '').trim()
+      }))
+      .filter(reference => reference.url || reference.title)
+  }
+
+  private normalizeCommentInputs(comments: UpdateCommentParams[] = [], fallbackAuthorId?: string): NormalizedCommentInput[] {
+    return comments
+      .map(comment => ({
+        id: comment.id || generateId(),
+        authorId: comment.authorId || fallbackAuthorId || '',
+        content: (comment.content || '').trim(),
+        createdAt: this.toNullableDate(comment.createdAt) || undefined
+      }))
+      .filter(comment => comment.authorId && comment.content)
+  }
+
   // 从阶段推导任务阶段（TaskStage）
   private deriveStageFromPhase(phase: TaskPhase | null): TaskStage {
     if (!phase) return 'filed'
@@ -391,7 +665,7 @@ export class TaskService {
     oldTask: TaskWithRelations,
     operatorId: string
   ): Promise<void> {
-    const fieldsToTrack = ['title', 'description', 'priority', 'dueDate', 'assigneeId'] as const
+    const fieldsToTrack = ['title', 'description', 'status', 'priority', 'dueDate', 'assigneeId', 'stage'] as const
 
     for (const field of fieldsToTrack) {
       const oldValue = oldTask[field]
@@ -408,6 +682,32 @@ export class TaskService {
           }
         })
       }
+    }
+  }
+
+  private async recordProgressHistories(
+    taskId: string,
+    oldPhases: TaskPhase[],
+    newPhases: NormalizedTaskPhaseInput[],
+    operatorId: string
+  ): Promise<void> {
+    const oldById = new Map(oldPhases.map(phase => [phase.id, phase]))
+
+    for (const phase of newPhases) {
+      const oldPhase = oldById.get(phase.id)
+      if (!oldPhase || oldPhase.progress === phase.progress) continue
+
+      await prisma.taskProgressHistory.create({
+        data: {
+          taskId,
+          phaseId: phase.id,
+          phaseName: phase.name,
+          assigneeId: phase.assigneeId,
+          operatorId,
+          oldProgress: oldPhase.progress,
+          newProgress: phase.progress
+        }
+      })
     }
   }
 

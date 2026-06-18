@@ -5,6 +5,7 @@ import { projectService } from '../services/project.service'
 import { sendSuccess, sendError, ErrorCodes } from '../utils/response'
 import { requireAuth } from '../middleware/auth'
 import { prisma } from '../utils/prisma'
+import { broadcastAll } from '../ws/broadcast'
 
 const router = Router()
 
@@ -53,21 +54,24 @@ router.post('/', async (req: Request, res: Response) => {
       return
     }
 
-    const { name, description, nonWorkdays, extraWorkdays } = req.body
+    const { name, description, nonWorkdays, extraWorkdays, phaseTemplates } = req.body
+    const trimmedName = typeof name === 'string' ? name.trim() : ''
 
     // 参数验证
-    if (!name) {
+    if (!trimmedName) {
       sendError(res, ErrorCodes.VALIDATION_ERROR, '项目名称不能为空')
       return
     }
 
     const project = await projectService.create({
-      name,
-      description: description || '',
+      name: trimmedName,
+      description: typeof description === 'string' ? description.trim() : '',
       nonWorkdays,
-      extraWorkdays
+      extraWorkdays,
+      phaseTemplates
     })
 
+    broadcastAll('project:create', project)
     sendSuccess(res, { project }, 201)
   } catch (error) {
     console.error('创建项目失败:', error)
@@ -106,6 +110,7 @@ router.put('/:id', async (req: Request, res: Response) => {
       extraWorkdays
     })
 
+    broadcastAll('project:update', project)
     sendSuccess(res, { project })
   } catch (error) {
     console.error('更新项目失败:', error)
@@ -137,6 +142,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
 
     await projectService.delete(id)
 
+    broadcastAll('project:delete', { id })
     sendSuccess(res, { message: '项目已删除' })
   } catch (error) {
     console.error('删除项目失败:', error)

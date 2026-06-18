@@ -5,6 +5,7 @@ import { taskService } from '../services/task.service'
 import { sendSuccess, sendError, ErrorCodes } from '../utils/response'
 import { requireAuth } from '../middleware/auth'
 import { prisma } from '../utils/prisma'
+import { broadcastAll } from '../ws/broadcast'
 
 const router = Router()
 
@@ -65,7 +66,9 @@ router.post('/', async (req: Request, res: Response) => {
       description,
       priority,
       dueDate,
-      assigneeId
+      assigneeId,
+      references,
+      comments
     } = req.body
 
     // 参数验证
@@ -83,9 +86,12 @@ router.post('/', async (req: Request, res: Response) => {
       description: description || '',
       priority: priority || 'medium',
       dueDate,
-      assigneeId
+      assigneeId,
+      references,
+      comments
     }, req.session.userId)
 
+    broadcastAll('task:create', task)
     sendSuccess(res, { task }, 201)
   } catch (error) {
     console.error('创建任务失败:', error)
@@ -105,18 +111,39 @@ router.put('/:id', async (req: Request, res: Response) => {
       return
     }
 
-    const { title, description, priority, dueDate, assigneeId, planningId, parentRequirementId } = req.body
-
-    const task = await taskService.update(id, {
+    const {
       title,
       description,
+      status,
       priority,
       dueDate,
       assigneeId,
       planningId,
-      parentRequirementId
+      parentRequirementId,
+      stage,
+      currentPhaseId,
+      phases,
+      references,
+      comments
+    } = req.body
+
+    const task = await taskService.update(id, {
+      title,
+      description,
+      status,
+      priority,
+      dueDate,
+      assigneeId,
+      planningId,
+      parentRequirementId,
+      stage,
+      currentPhaseId,
+      phases,
+      references,
+      comments
     }, req.session.userId)
 
+    broadcastAll('task:update', task)
     sendSuccess(res, { task })
   } catch (error) {
     console.error('更新任务失败:', error)
@@ -138,6 +165,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
 
     await taskService.delete(id)
 
+    broadcastAll('task:delete', { id })
     sendSuccess(res, { message: '任务已删除' })
   } catch (error: any) {
     console.error('删除任务失败:', error)
@@ -161,6 +189,7 @@ router.patch('/:id/move', async (req: Request, res: Response) => {
     }
 
     const task = await taskService.move(id, status, req.session.userId)
+    broadcastAll('task:update', task)
     sendSuccess(res, { task })
   } catch (error) {
     console.error('移动任务失败:', error)
@@ -187,6 +216,7 @@ router.patch('/:id/phases/:phaseId/progress', async (req: Request, res: Response
       req.session.userId!
     )
 
+    broadcastAll('task:update', task)
     sendSuccess(res, { task })
   } catch (error: any) {
     console.error('更新阶段进度失败:', error)

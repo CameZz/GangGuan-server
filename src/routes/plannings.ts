@@ -23,10 +23,10 @@ router.get('/:projectId/plannings', async (req: Request, res: Response) => {
   }
 })
 
-// GET /api/plannings/:id - 获取单个规划
-router.get('/:id', async (req: Request, res: Response) => {
+// GET /api/projects/:projectId/plannings/:planningId - 获取单个规划
+router.get('/:projectId/plannings/:planningId', async (req: Request, res: Response) => {
   try {
-    const id = req.params.id as string
+    const id = req.params.planningId as string
     const planning = await planningService.getById(id)
 
     if (!planning) {
@@ -70,8 +70,8 @@ router.post('/:projectId/plannings', async (req: Request, res: Response) => {
   }
 })
 
-// PUT /api/plannings/:id - 更新规划
-router.put('/:id', async (req: Request, res: Response) => {
+// PUT /api/projects/:projectId/plannings/:planningId - 更新规划
+router.put('/:projectId/plannings/:planningId', async (req: Request, res: Response) => {
   try {
     // 验证权限
     const currentUser = await prisma.user.findUnique({
@@ -83,7 +83,7 @@ router.put('/:id', async (req: Request, res: Response) => {
       return
     }
 
-    const id = req.params.id as string
+    const id = req.params.planningId as string
 
     // 验证规划是否存在
     const existingPlanning = await planningService.getById(id)
@@ -102,8 +102,8 @@ router.put('/:id', async (req: Request, res: Response) => {
   }
 })
 
-// DELETE /api/plannings/:id - 删除规划
-router.delete('/:id', async (req: Request, res: Response) => {
+// DELETE /api/projects/:projectId/plannings/:planningId - 删除规划
+router.delete('/:projectId/plannings/:planningId', async (req: Request, res: Response) => {
   try {
     // 验证权限
     const currentUser = await prisma.user.findUnique({
@@ -115,7 +115,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
       return
     }
 
-    const id = req.params.id as string
+    const id = req.params.planningId as string
 
     // 验证规划是否存在
     const existingPlanning = await planningService.getById(id)
