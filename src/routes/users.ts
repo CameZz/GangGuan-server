@@ -5,6 +5,7 @@ import { userService } from '../services/user.service'
 import { sendSuccess, sendError, ErrorCodes } from '../utils/response'
 import { requireAuth } from '../middleware/auth'
 import { prisma } from '../utils/prisma'
+import { broadcastAll } from '../ws/broadcast'
 
 const router = Router()
 
@@ -79,6 +80,7 @@ router.post('/', async (req: Request, res: Response) => {
       isAdmin: isAdmin || false
     })
 
+    broadcastAll('user:create', user)
     sendSuccess(res, { user }, 201)
   } catch (error) {
     console.error('创建用户失败:', error)
@@ -123,6 +125,7 @@ router.put('/:id', async (req: Request, res: Response) => {
       password
     })
 
+    broadcastAll('user:update', user)
     sendSuccess(res, { user })
   } catch (error) {
     console.error('更新用户失败:', error)
@@ -159,6 +162,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
     }
 
     await userService.delete(id)
+    broadcastAll('user:delete', { id })
 
     sendSuccess(res, { message: '用户已删除' })
   } catch (error) {

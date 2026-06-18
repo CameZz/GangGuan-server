@@ -603,6 +603,19 @@ export class TaskService {
     return value instanceof Date ? value : new Date(value)
   }
 
+  private toHistoryValue(field: string, value: unknown): string {
+    if (field !== 'dueDate') {
+      return String(value ?? '')
+    }
+
+    if (value === undefined || value === null || value === '') {
+      return ''
+    }
+
+    const date = value instanceof Date ? value : new Date(String(value))
+    return Number.isNaN(date.getTime()) ? String(value) : date.toISOString()
+  }
+
   private normalizeReferenceInputs(references: UpdateReferenceParams[] = []): NormalizedReferenceInput[] {
     return references
       .map(reference => ({
@@ -671,14 +684,14 @@ export class TaskService {
       const oldValue = oldTask[field]
       const newValue = newData[field]
 
-      if (newValue !== undefined && oldValue !== newValue) {
+      if (newValue !== undefined && this.toHistoryValue(field, oldValue) !== this.toHistoryValue(field, newValue)) {
         await prisma.taskHistory.create({
           data: {
             taskId,
             operatorId,
             field,
-            oldValue: String(oldValue ?? ''),
-            newValue: String(newValue ?? '')
+            oldValue: this.toHistoryValue(field, oldValue),
+            newValue: this.toHistoryValue(field, newValue)
           }
         })
       }

@@ -50,6 +50,26 @@ export class AuthService {
     const { password: _, ...userWithoutPassword } = user
     return userWithoutPassword
   }
+
+  async changePassword(id: string, oldPassword: string, newPassword: string): Promise<boolean> {
+    const user = await prisma.user.findUnique({
+      where: { id }
+    })
+
+    if (!user) return false
+
+    const isValid = await this.comparePassword(oldPassword, user.password)
+    if (!isValid) return false
+
+    await prisma.user.update({
+      where: { id },
+      data: {
+        password: await this.hashPassword(newPassword)
+      }
+    })
+
+    return true
+  }
 }
 
 export const authService = new AuthService()

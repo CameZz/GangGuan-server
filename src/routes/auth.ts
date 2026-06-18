@@ -64,4 +64,32 @@ router.get('/me', requireAuth, async (req: Request, res: Response) => {
   }
 })
 
+// PUT /api/auth/password - 修改当前用户密码
+router.put('/password', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { oldPassword, newPassword } = req.body
+
+    if (!oldPassword || !newPassword) {
+      sendError(res, ErrorCodes.VALIDATION_ERROR, '旧密码和新密码不能为空')
+      return
+    }
+
+    if (String(newPassword).length < 6) {
+      sendError(res, ErrorCodes.VALIDATION_ERROR, '新密码长度不能少于 6 位')
+      return
+    }
+
+    const success = await authService.changePassword(req.session.userId!, oldPassword, newPassword)
+    if (!success) {
+      sendError(res, ErrorCodes.INVALID_CREDENTIALS, '旧密码不正确', 401)
+      return
+    }
+
+    sendSuccess(res, { message: '密码修改成功' })
+  } catch (error) {
+    console.error('修改密码失败:', error)
+    sendError(res, ErrorCodes.INTERNAL_ERROR, '修改密码失败', 500)
+  }
+})
+
 export default router

@@ -5,6 +5,7 @@ import { planningService } from '../services/planning.service'
 import { sendSuccess, sendError, ErrorCodes } from '../utils/response'
 import { requireAuth } from '../middleware/auth'
 import { prisma } from '../utils/prisma'
+import { broadcastAll } from '../ws/broadcast'
 
 const router = Router()
 
@@ -63,6 +64,7 @@ router.post('/:projectId/plannings', async (req: Request, res: Response) => {
     }
 
     const planning = await planningService.create(projectId, { name, deadline })
+    broadcastAll('planning:create', planning)
     sendSuccess(res, { planning }, 201)
   } catch (error) {
     console.error('创建规划失败:', error)
@@ -94,6 +96,7 @@ router.put('/:projectId/plannings/:planningId', async (req: Request, res: Respon
 
     const { name, deadline } = req.body
     const planning = await planningService.update(id, { name, deadline })
+    broadcastAll('planning:update', planning)
 
     sendSuccess(res, { planning })
   } catch (error) {
@@ -125,6 +128,7 @@ router.delete('/:projectId/plannings/:planningId', async (req: Request, res: Res
     }
 
     await planningService.delete(id)
+    broadcastAll('planning:delete', { id })
 
     sendSuccess(res, { message: '规划已删除' })
   } catch (error) {
