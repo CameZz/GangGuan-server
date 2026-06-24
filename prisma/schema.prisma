@@ -32,6 +32,8 @@ model User {
   taskHistories      TaskHistory[]            @relation("TaskOperator")
   progressHistories  TaskProgressHistory[]    @relation("ProgressOperator")
   phaseAssigneeLogs  TaskProgressHistory[]    @relation("PhaseAssigneeLog")
+  sentApprovals      TaskApprovalRequest[]    @relation("ApprovalRequester")
+  reviewedApprovals  TaskApprovalRequest[]    @relation("ApprovalReviewer")
 
   @@map("users")
 }
@@ -48,9 +50,10 @@ model Project {
   extraWorkdays  Json     @map("extra_workdays")    // string[]
 
   // 关系
-  phaseTemplates ProjectPhaseTemplate[]
-  plannings      Planning[]
-  tasks          Task[]
+  phaseTemplates  ProjectPhaseTemplate[]
+  plannings       Planning[]
+  tasks           Task[]
+  approvalRequests TaskApprovalRequest[]
 
   @@map("projects")
 }
@@ -82,7 +85,8 @@ model Planning {
   projectId String    @map("project_id")
   project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
-  tasks     Task[]
+  tasks             Task[]
+  approvalRequests  TaskApprovalRequest[]
 
   @@map("plannings")
 }
@@ -258,4 +262,36 @@ model TaskProgressHistory {
   @@index([phaseId])
   @@index([operatorId])
   @@map("task_progress_histories")
+}
+
+// ============ 任务申请审批 ============
+model TaskApprovalRequest {
+  id            String    @id @default(uuid())
+  title         String
+  remark        String    @db.Text
+  phaseSnapshot Json      @map("phase_snapshot")   // [{name, assigneeId}]
+  status        String    @default("pending")      // pending / approved / rejected
+  reviewComment String?   @map("review_comment") @db.Text
+  reviewedAt    DateTime? @map("reviewed_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  projectId           String  @map("project_id")
+  project             Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  planningId          String?  @map("planning_id")
+  planning            Planning? @relation(fields: [planningId], references: [id], onDelete: SetNull)
+
+  parentRequirementId String?  @map("parent_requirement_id")
+
+  requesterId         String  @map("requester_id")
+  requester           User    @relation("ApprovalRequester", fields: [requesterId], references: [id])
+
+  reviewerId          String? @map("reviewer_id")
+  reviewer            User?   @relation("ApprovalReviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
+
+  @@index([projectId])
+  @@index([requesterId])
+  @@index([status])
+  @@map("task_approval_requests")
 }

@@ -2,7 +2,7 @@ import { Notification } from '@prisma/client'
 import { prisma } from '../utils/prisma'
 import { sendTo } from '../ws/broadcast'
 
-export type NotificationType = 'progress_update' | 'behind_progress' | 'comment' | 'reference'
+export type NotificationType = 'progress_update' | 'behind_progress' | 'comment' | 'reference' | 'approval_submitted' | 'approval_approved' | 'approval_rejected'
 
 export interface CreateNotificationInput {
   recipientId: string
