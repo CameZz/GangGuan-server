@@ -15,6 +15,7 @@ import taskRoutes from './routes/tasks'
 import historyRoutes from './routes/histories'
 import notificationRoutes from './routes/notifications'
 import approvalRoutes from './routes/approvals'
+import dailyNoteRoutes from './routes/daily-notes'
 
 import { initWebSocket } from './ws'
 import { reminderService } from './services/reminder.service'
@@ -53,6 +54,7 @@ app.use('/api/tasks', taskRoutes)
 app.use('/api', historyRoutes)
 app.use('/api/notifications', notificationRoutes)
 app.use('/api/approvals', approvalRoutes)
+app.use('/api', dailyNoteRoutes)
 
 app.use(errorHandler)
 

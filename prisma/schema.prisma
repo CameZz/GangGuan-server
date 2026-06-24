@@ -34,6 +34,7 @@ model User {
   phaseAssigneeLogs  TaskProgressHistory[]    @relation("PhaseAssigneeLog")
   sentApprovals      TaskApprovalRequest[]    @relation("ApprovalRequester")
   reviewedApprovals  TaskApprovalRequest[]    @relation("ApprovalReviewer")
+  dailyNotes         DailyNote[]              @relation("DailyNoteAuthor")
 
   @@map("users")
 }
@@ -54,6 +55,7 @@ model Project {
   plannings       Planning[]
   tasks           Task[]
   approvalRequests TaskApprovalRequest[]
+  dailyNotes      DailyNote[]
 
   @@map("projects")
 }
@@ -294,4 +296,23 @@ model TaskApprovalRequest {
   @@index([requesterId])
   @@index([status])
   @@map("task_approval_requests")
+}
+
+// ============ 每日备注 ============
+model DailyNote {
+  id        String   @id @default(uuid())
+  content   String   @db.Text
+  dateKey   String   @map("date_key")                       // "2026-06-24" 格式
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  memberId  String   @map("member_id")
+  member    User     @relation("DailyNoteAuthor", fields: [memberId], references: [id], onDelete: Cascade)
+
+  projectId String   @map("project_id")
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([memberId, projectId, dateKey])
+  @@index([projectId, dateKey])
+  @@map("daily_notes")
 }
