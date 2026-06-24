@@ -124,14 +124,12 @@ router.get('/', async (req: Request, res: Response) => {
     const status = getQueryString(req.query.status)
     const projectId = getQueryString(req.query.projectId)
 
-    // 权限检查：只有 PM/管理员可以查看审批列表
-    if (!(await isPmOrAdmin(userId))) {
-      sendError(res, ErrorCodes.FORBIDDEN, '无权访问审批列表', 403)
-      return
-    }
-
-    // 构建筛选条件
+    // PM/管理员可查看所有，普通用户只能查看自己提交的
+    const isPM = await isPmOrAdmin(userId)
     const where: any = {}
+    if (!isPM) {
+      where.requesterId = userId
+    }
     if (status && status !== 'all') {
       where.status = status
     }
