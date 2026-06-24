@@ -1,5 +1,4 @@
 // 服务端配置加载
-
 import * as fs from 'fs'
 import * as path from 'path'
 
@@ -17,6 +16,7 @@ interface ServerConfig {
   port: number
   cors: CorsConfig
   session: SessionConfig
+  timezone?: string
 }
 
 // 读取 server.json 配置文件
@@ -41,6 +41,8 @@ try {
     }
   }
 }
+
+config.timezone = config.timezone || 'Asia/Shanghai'
 
 export { config }
 export type { ServerConfig, CorsConfig, SessionConfig }

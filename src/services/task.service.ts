@@ -1,17 +1,14 @@
-// 任务服务（核心）
-
 import { Task, TaskPhase, TaskHistory, TaskProgressHistory } from '@prisma/client'
 import { prisma } from '../utils/prisma'
 import { generateId } from '../utils/id'
+import { notificationService } from './notification.service'
 
-// 任务状态类型
 type TaskStatus = 'todo' | 'in-progress' | 'done' | 'abandoned'
 type TaskPriority = 'low' | 'medium' | 'high'
 type TaskItemType = 'requirement' | 'task'
 type TaskPhaseStatus = 'pending' | 'in-progress' | 'done'
 type TaskStage = 'filed' | 'designing' | 'initial' | 'preliminary' | 'final' | 'finalAcceptance' | 'completed'
 
-// 创建任务参数
 interface CreateTaskParams {
   projectId: string
   planningId?: string | null
@@ -22,11 +19,11 @@ interface CreateTaskParams {
   priority: TaskPriority
   dueDate?: string | null
   assigneeId?: string | null
+  phases?: UpdateTaskPhaseParams[]
   references?: UpdateReferenceParams[]
   comments?: UpdateCommentParams[]
 }
 
-// 更新任务参数
 interface UpdateTaskParams {
   title?: string
   description?: string
@@ -48,6 +45,8 @@ interface UpdateReferenceParams {
   type?: string
   url?: string
   title?: string
+  authorId?: string | null
+  createdAt?: string | Date | null
 }
 
 interface UpdateCommentParams {
@@ -86,6 +85,8 @@ type NormalizedReferenceInput = {
   type: string
   url: string
   title: string
+  authorId: string | null
+  createdAt: Date | undefined
 }
 
 type NormalizedCommentInput = {
@@ -95,7 +96,6 @@ type NormalizedCommentInput = {
   createdAt: Date | undefined
 }
 
-// 包含关联数据的任务类型
 type TaskWithRelations = Task & {
   phases: TaskPhase[]
   references: any[]
@@ -103,60 +103,36 @@ type TaskWithRelations = Task & {
 }
 
 export class TaskService {
-  // 获取项目的所有任务
   async getByProject(projectId: string): Promise<TaskWithRelations[]> {
     return prisma.task.findMany({
       where: { projectId },
-      include: {
-        phases: { orderBy: { order: 'asc' } },
-        references: true,
-        comments: true
-      },
+      include: this.taskInclude(),
       orderBy: { createdAt: 'desc' }
     })
   }
 
-  // 获取规划的所有任务
   async getByPlanning(planningId: string): Promise<TaskWithRelations[]> {
     return prisma.task.findMany({
       where: { planningId },
-      include: {
-        phases: { orderBy: { order: 'asc' } },
-        references: true,
-        comments: true
-      },
+      include: this.taskInclude(),
       orderBy: { createdAt: 'desc' }
     })
   }
 
-  // 根据 ID 获取任务
   async getById(id: string): Promise<TaskWithRelations | null> {
     return prisma.task.findUnique({
       where: { id },
-      include: {
-        phases: { orderBy: { order: 'asc' } },
-        references: true,
-        comments: true
-      }
+      include: this.taskInclude()
     })
   }
 
-  // 创建任务
   async create(data: CreateTaskParams, operatorId?: string): Promise<TaskWithRelations> {
     const { projectId, planningId, itemType, parentRequirementId, title, description, priority, dueDate, assigneeId } = data
-    const references = this.normalizeReferenceInputs(data.references)
+    const references = this.normalizeReferenceInputs(data.references, operatorId)
     const comments = this.normalizeCommentInputs(data.comments, operatorId)
 
-    // 获取项目的阶段模板
-    const phaseTemplates = await prisma.projectPhaseTemplate.findMany({
-      where: { projectId, enabled: true },
-      orderBy: { order: 'asc' }
-    })
-
-    // 根据任务类型处理
     if (itemType === 'requirement') {
-      // 需求单：无阶段、无负责人、无截止日期
-      const task = await prisma.task.create({
+      return prisma.task.create({
         data: {
           itemType: 'requirement',
           parentRequirementId: null,
@@ -170,41 +146,37 @@ export class TaskService {
           currentPhaseId: null,
           projectId,
           planningId: planningId || null,
-          references: {
-            create: references
-          },
-          comments: {
-            create: comments
-          }
+          references: { create: references },
+          comments: { create: comments }
         },
-        include: {
-          phases: true,
-          references: true,
-          comments: true
-        }
+        include: this.taskInclude()
       })
-      return task
     }
 
-    // 任务：从模板生成阶段
-    const phases = phaseTemplates.map(template => ({
-      id: generateId(),
-      templateId: template.id,
-      name: template.name,
-      order: template.order,
-      progress: 0,
-      status: 'pending' as TaskPhaseStatus,
-      startTime: null,
-      endTime: null,
-      assigneeId: null
-    }))
+    const templates = await prisma.projectPhaseTemplate.findMany({
+      where: { projectId, enabled: true },
+      orderBy: { order: 'asc' }
+    })
 
-    // 推导当前阶段
-    const currentPhase = phases[0] || null
-    const stage = this.deriveStageFromPhase(currentPhase ? { name: currentPhase.name } as any : null)
-    const status = 'todo' as TaskStatus
+    const phases = data.phases !== undefined
+      ? this.normalizeTaskPhaseInputs(data.phases)
+      : templates.map(template => ({
+          id: generateId(),
+          templateId: template.id,
+          name: template.name,
+          order: template.order,
+          assigneeId: null,
+          progress: 0,
+          status: 'pending' as TaskPhaseStatus,
+          startTime: null,
+          endTime: null
+        }))
 
-    const task = await prisma.task.create({
+    const currentPhase = this.getCurrentPhase(phases as TaskPhase[])
+    const status = this.deriveStatusFromPhases(phases as TaskPhase[], 'todo')
+    const stage = this.deriveStageFromPhase(currentPhase as TaskPhase | null)
+
+    return prisma.task.create({
       data: {
         itemType: 'task',
         parentRequirementId: parentRequirementId || null,
@@ -212,19 +184,14 @@ export class TaskService {
         description,
         status,
         priority,
-        dueDate: dueDate ? new Date(dueDate) : null,
+        dueDate: this.toNullableDate(dueDate) ?? null,
         assigneeId: assigneeId || currentPhase?.assigneeId || null,
         stage,
         currentPhaseId: currentPhase?.id || null,
         projectId,
         planningId: planningId || null,
-        references: {
-          create: references
-        },
-        comments: {
-          create: comments
-        },
-        // 创建关联的阶段
+        references: { create: references },
+        comments: { create: comments },
         phases: {
           create: phases.map(phase => ({
             id: phase.id,
@@ -239,22 +206,13 @@ export class TaskService {
           }))
         }
       },
-      include: {
-        phases: { orderBy: { order: 'asc' } },
-        references: true,
-        comments: true
-      }
+      include: this.taskInclude()
     })
-
-    return task
   }
 
-  // 更新任务
   async update(id: string, data: UpdateTaskParams, operatorId?: string): Promise<TaskWithRelations> {
     const existingTask = await this.getById(id)
-    if (!existingTask) {
-      throw new Error('任务不存在')
-    }
+    if (!existingTask) throw new Error('任务不存在')
 
     const isRequirement = existingTask.itemType === 'requirement'
     const phases = isRequirement
@@ -286,10 +244,9 @@ export class TaskService {
       : data.phases !== undefined
         ? currentPhase?.assigneeId || null
         : data.assigneeId
-    const references = data.references !== undefined ? this.normalizeReferenceInputs(data.references) : null
+    const references = data.references !== undefined ? this.normalizeReferenceInputs(data.references, operatorId) : null
     const comments = data.comments !== undefined ? this.normalizeCommentInputs(data.comments, operatorId) : null
 
-    // 记录历史
     if (operatorId) {
       await this.recordHistory(id, data, existingTask, operatorId)
       if (!isRequirement && data.phases !== undefined) {
@@ -300,13 +257,7 @@ export class TaskService {
     const task = await prisma.$transaction(async tx => {
       if (data.phases !== undefined || isRequirement) {
         const incomingPhaseIds = new Set(phases.map(phase => phase.id))
-
-        await tx.taskPhase.deleteMany({
-          where: {
-            taskId: id,
-            id: { notIn: [...incomingPhaseIds] }
-          }
-        })
+        await tx.taskPhase.deleteMany({ where: { taskId: id, id: { notIn: [...incomingPhaseIds] } } })
 
         const existingPhaseIds = new Set(existingTask.phases.map(phase => phase.id))
         for (const phase of phases as NormalizedTaskPhaseInput[]) {
@@ -320,68 +271,38 @@ export class TaskService {
             endTime: phase.endTime,
             assigneeId: phase.assigneeId
           }
-
           if (existingPhaseIds.has(phase.id)) {
-            await tx.taskPhase.update({
-              where: { id: phase.id },
-              data: phaseData
-            })
+            await tx.taskPhase.update({ where: { id: phase.id }, data: phaseData })
           } else {
-            await tx.taskPhase.create({
-              data: {
-                id: phase.id,
-                taskId: id,
-                ...phaseData
-              }
-            })
+            await tx.taskPhase.create({ data: { id: phase.id, taskId: id, ...phaseData } })
           }
         }
       }
 
       if (references) {
         const incomingReferenceIds = new Set(references.map(reference => reference.id))
-
-        await tx.reference.deleteMany({
-          where: {
-            taskId: id,
-            id: { notIn: [...incomingReferenceIds] }
-          }
-        })
+        await tx.reference.deleteMany({ where: { taskId: id, id: { notIn: [...incomingReferenceIds] } } })
 
         const existingReferenceIds = new Set(existingTask.references.map(reference => reference.id))
         for (const reference of references) {
           const referenceData = {
             type: reference.type,
             url: reference.url,
-            title: reference.title
+            title: reference.title,
+            authorId: reference.authorId,
+            createdAt: reference.createdAt
           }
-
           if (existingReferenceIds.has(reference.id)) {
-            await tx.reference.update({
-              where: { id: reference.id },
-              data: referenceData
-            })
+            await tx.reference.update({ where: { id: reference.id }, data: referenceData })
           } else {
-            await tx.reference.create({
-              data: {
-                id: reference.id,
-                taskId: id,
-                ...referenceData
-              }
-            })
+            await tx.reference.create({ data: { id: reference.id, taskId: id, ...referenceData } })
           }
         }
       }
 
       if (comments) {
         const incomingCommentIds = new Set(comments.map(comment => comment.id))
-
-        await tx.comment.deleteMany({
-          where: {
-            taskId: id,
-            id: { notIn: [...incomingCommentIds] }
-          }
-        })
+        await tx.comment.deleteMany({ where: { taskId: id, id: { notIn: [...incomingCommentIds] } } })
 
         const existingCommentIds = new Set(existingTask.comments.map(comment => comment.id))
         for (const comment of comments) {
@@ -390,20 +311,10 @@ export class TaskService {
             content: comment.content,
             createdAt: comment.createdAt
           }
-
           if (existingCommentIds.has(comment.id)) {
-            await tx.comment.update({
-              where: { id: comment.id },
-              data: commentData
-            })
+            await tx.comment.update({ where: { id: comment.id }, data: commentData })
           } else {
-            await tx.comment.create({
-              data: {
-                id: comment.id,
-                taskId: id,
-                ...commentData
-              }
-            })
+            await tx.comment.create({ data: { id: comment.id, taskId: id, ...commentData } })
           }
         }
       }
@@ -423,94 +334,66 @@ export class TaskService {
           currentPhaseId: nextCurrentPhaseId,
           updatedAt: new Date()
         },
-        include: {
-          phases: { orderBy: { order: 'asc' } },
-          references: true,
-          comments: true
-        }
+        include: this.taskInclude()
       })
     })
+
+    if (operatorId && comments) {
+      const existingCommentIds = new Set(existingTask.comments.map(comment => comment.id))
+      for (const comment of comments.filter(comment => !existingCommentIds.has(comment.id))) {
+        await notificationService.notifyComment(id, comment, comment.authorId || operatorId)
+      }
+    }
+
+    if (operatorId && references) {
+      const existingReferenceIds = new Set(existingTask.references.map(reference => reference.id))
+      for (const reference of references.filter(reference => !existingReferenceIds.has(reference.id))) {
+        await notificationService.notifyReference(id, reference, reference.authorId || operatorId)
+      }
+    }
 
     return task
   }
 
-  // 删除任务
   async delete(id: string): Promise<void> {
     const task = await this.getById(id)
-    if (!task) {
-      throw new Error('任务不存在')
-    }
+    if (!task) throw new Error('任务不存在')
 
-    // 需求单有子任务时不能删除
     if (task.itemType === 'requirement') {
-      const childCount = await prisma.task.count({
-        where: { parentRequirementId: id }
-      })
-      if (childCount > 0) {
-        throw new Error('需求单下有子任务，不能删除')
-      }
+      const childCount = await prisma.task.count({ where: { parentRequirementId: id } })
+      if (childCount > 0) throw new Error('需求单下有子任务，不能删除')
     }
 
     await prisma.task.delete({ where: { id } })
   }
 
-  // 移动任务状态
   async move(id: string, status: TaskStatus, operatorId?: string): Promise<TaskWithRelations> {
     const task = await this.getById(id)
-    if (!task) {
-      throw new Error('任务不存在')
-    }
+    if (!task) throw new Error('任务不存在')
 
-    // 记录历史
     if (operatorId && task.status !== status) {
       await prisma.taskHistory.create({
-        data: {
-          taskId: id,
-          operatorId,
-          field: 'status',
-          oldValue: task.status,
-          newValue: status
-        }
+        data: { taskId: id, operatorId, field: 'status', oldValue: task.status, newValue: status }
       })
     }
 
-    const updatedTask = await prisma.task.update({
+    return prisma.task.update({
       where: { id },
       data: { status, updatedAt: new Date() },
-      include: {
-        phases: { orderBy: { order: 'asc' } },
-        references: true,
-        comments: true
-      }
+      include: this.taskInclude()
     })
-
-    return updatedTask
   }
 
-  // 更新阶段进度
-  async updatePhaseProgress(
-    taskId: string,
-    phaseId: string,
-    progress: number,
-    operatorId: string
-  ): Promise<TaskWithRelations> {
+  async updatePhaseProgress(taskId: string, phaseId: string, progress: number, operatorId: string): Promise<TaskWithRelations> {
     const task = await this.getById(taskId)
-    if (!task) {
-      throw new Error('任务不存在')
-    }
+    if (!task) throw new Error('任务不存在')
 
     const phase = task.phases.find(p => p.id === phaseId)
-    if (!phase) {
-      throw new Error('阶段不存在')
-    }
+    if (!phase) throw new Error('阶段不存在')
 
-    // 限制进度范围
-    const clampedProgress = Math.max(0, Math.min(100, progress))
-
-    // 推导阶段状态
+    const clampedProgress = Math.max(0, Math.min(100, Math.round(Number(progress))))
     const phaseStatus = this.getPhaseStatus(clampedProgress)
 
-    // 记录进度历史
     if (phase.progress !== clampedProgress) {
       await prisma.taskProgressHistory.create({
         data: {
@@ -525,33 +408,25 @@ export class TaskService {
       })
     }
 
-    // 更新阶段
     await prisma.taskPhase.update({
       where: { id: phaseId },
       data: {
         progress: clampedProgress,
         status: phaseStatus,
-        // 如果进度从 0 开始，设置开始时间
         startTime: phase.progress === 0 && clampedProgress > 0 ? new Date() : phase.startTime,
-        // 如果进度达到 100，设置结束时间
         endTime: clampedProgress >= 100 ? new Date() : null
       }
     })
 
-    // 重新获取更新后的任务
-    const updatedTask = await this.getById(taskId)!
+    const updatedTask = await this.getById(taskId)
+    if (!updatedTask) throw new Error('任务不存在')
 
-    // 推导任务整体状态
-    const newStatus = this.deriveStatusFromPhases(updatedTask!.phases, task.status as TaskStatus)
-    const newStage = this.deriveStageFromPhase(this.getCurrentPhase(updatedTask!.phases))
-    const newCurrentPhase = this.getCurrentPhase(updatedTask!.phases)
-
-    // 更新任务派生字段
+    const newCurrentPhase = this.getCurrentPhase(updatedTask.phases)
     await prisma.task.update({
       where: { id: taskId },
       data: {
-        status: newStatus,
-        stage: newStage,
+        status: this.deriveStatusFromPhases(updatedTask.phases, task.status as TaskStatus),
+        stage: this.deriveStageFromPhase(newCurrentPhase),
         currentPhaseId: newCurrentPhase?.id || null,
         assigneeId: newCurrentPhase?.assigneeId || task.assigneeId,
         updatedAt: new Date()
@@ -561,14 +436,33 @@ export class TaskService {
     return (await this.getById(taskId))!
   }
 
-  // ============ 规范化逻辑（移植自客户端） ============
+  async getHistories(taskId: string): Promise<TaskHistory[]> {
+    return prisma.taskHistory.findMany({ where: { taskId }, orderBy: { createdAt: 'desc' } })
+  }
 
-  // 获取当前阶段（第一个未完成阶段）
+  async getProgressHistories(taskId: string): Promise<TaskProgressHistory[]> {
+    return prisma.taskProgressHistory.findMany({ where: { taskId }, orderBy: { createdAt: 'desc' } })
+  }
+
+  async getProjectProgressHistories(projectId: string): Promise<TaskProgressHistory[]> {
+    return prisma.taskProgressHistory.findMany({
+      where: { task: { projectId } },
+      orderBy: { createdAt: 'desc' }
+    })
+  }
+
+  private taskInclude() {
+    return {
+      phases: { orderBy: { order: 'asc' as const } },
+      references: true,
+      comments: true
+    }
+  }
+
   private getCurrentPhase(phases: TaskPhase[]): TaskPhase | null {
     return phases.find(p => p.status !== 'done') || phases[phases.length - 1] || null
   }
 
-  // 推导阶段状态
   private getPhaseStatus(progress: number): TaskPhaseStatus {
     if (progress <= 0) return 'pending'
     if (progress >= 100) return 'done'
@@ -597,32 +491,15 @@ export class TaskService {
       .map((phase, index) => ({ ...phase, order: index }))
   }
 
-  private toNullableDate(value: string | Date | null | undefined): Date | null | undefined {
-    if (value === undefined) return undefined
-    if (value === null || value === '') return null
-    return value instanceof Date ? value : new Date(value)
-  }
-
-  private toHistoryValue(field: string, value: unknown): string {
-    if (field !== 'dueDate') {
-      return String(value ?? '')
-    }
-
-    if (value === undefined || value === null || value === '') {
-      return ''
-    }
-
-    const date = value instanceof Date ? value : new Date(String(value))
-    return Number.isNaN(date.getTime()) ? String(value) : date.toISOString()
-  }
-
-  private normalizeReferenceInputs(references: UpdateReferenceParams[] = []): NormalizedReferenceInput[] {
+  private normalizeReferenceInputs(references: UpdateReferenceParams[] = [], fallbackAuthorId?: string): NormalizedReferenceInput[] {
     return references
       .map(reference => ({
         id: reference.id || generateId(),
         type: reference.type || 'link',
         url: (reference.url || '').trim(),
-        title: (reference.title || '').trim()
+        title: (reference.title || '').trim(),
+        authorId: reference.authorId || fallbackAuthorId || null,
+        createdAt: this.toNullableDate(reference.createdAt) || undefined
       }))
       .filter(reference => reference.url || reference.title)
   }
@@ -638,52 +515,48 @@ export class TaskService {
       .filter(comment => comment.authorId && comment.content)
   }
 
-  // 从阶段推导任务阶段（TaskStage）
-  private deriveStageFromPhase(phase: TaskPhase | null): TaskStage {
-    if (!phase) return 'filed'
-
-    const stageMap: Record<string, TaskStage> = {
-      '立案': 'filed',
-      '设计': 'designing',
-      '初版实现': 'initial',
-      '初步验收': 'preliminary',
-      '终版完成': 'final',
-      '最终验收': 'finalAcceptance',
-      '完成': 'completed'
-    }
-
-    return stageMap[phase.name] || 'filed'
+  private toNullableDate(value: string | Date | null | undefined): Date | null | undefined {
+    if (value === undefined) return undefined
+    if (value === null || value === '') return null
+    return value instanceof Date ? value : new Date(value)
   }
 
-  // 从阶段进度推导任务状态
+  private toHistoryValue(field: string, value: unknown): string {
+    if (field !== 'dueDate') return String(value ?? '')
+    if (value === undefined || value === null || value === '') return ''
+    const date = value instanceof Date ? value : new Date(String(value))
+    return Number.isNaN(date.getTime()) ? String(value) : date.toISOString()
+  }
+
+  private deriveStageFromPhase(phase: TaskPhase | null): TaskStage {
+    if (!phase) return 'filed'
+    const byOrder: TaskStage[] = ['filed', 'designing', 'initial', 'preliminary', 'final', 'finalAcceptance', 'completed']
+    const order = Number((phase as any).order)
+    if (Number.isFinite(order) && byOrder[order]) return byOrder[order]
+
+    const name = phase.name || ''
+    if (name.includes('设计')) return 'designing'
+    if (name.includes('初版实现')) return 'initial'
+    if (name.includes('初步验收')) return 'preliminary'
+    if (name.includes('终版完成')) return 'final'
+    if (name.includes('最终验收')) return 'finalAcceptance'
+    if (name.includes('完成')) return 'completed'
+    return 'filed'
+  }
+
   private deriveStatusFromPhases(phases: TaskPhase[], currentStatus: TaskStatus): TaskStatus {
-    // 如果原状态是 abandoned，保持不变
     if (currentStatus === 'abandoned') return 'abandoned'
-
     if (phases.length === 0) return currentStatus
-
-    const allDone = phases.every(p => p.status === 'done')
-    if (allDone) return 'done'
-
-    const anyInProgress = phases.some(p => p.status === 'in-progress')
-    if (anyInProgress) return 'in-progress'
-
+    if (phases.every(p => p.status === 'done')) return 'done'
+    if (phases.some(p => p.status === 'in-progress')) return 'in-progress'
     return 'todo'
   }
 
-  // 记录任务历史
-  private async recordHistory(
-    taskId: string,
-    newData: UpdateTaskParams,
-    oldTask: TaskWithRelations,
-    operatorId: string
-  ): Promise<void> {
+  private async recordHistory(taskId: string, newData: UpdateTaskParams, oldTask: TaskWithRelations, operatorId: string): Promise<void> {
     const fieldsToTrack = ['title', 'description', 'status', 'priority', 'dueDate', 'assigneeId', 'stage'] as const
-
     for (const field of fieldsToTrack) {
       const oldValue = oldTask[field]
       const newValue = newData[field]
-
       if (newValue !== undefined && this.toHistoryValue(field, oldValue) !== this.toHistoryValue(field, newValue)) {
         await prisma.taskHistory.create({
           data: {
@@ -705,11 +578,9 @@ export class TaskService {
     operatorId: string
   ): Promise<void> {
     const oldById = new Map(oldPhases.map(phase => [phase.id, phase]))
-
     for (const phase of newPhases) {
       const oldPhase = oldById.get(phase.id)
       if (!oldPhase || oldPhase.progress === phase.progress) continue
-
       await prisma.taskProgressHistory.create({
         data: {
           taskId,
@@ -722,32 +593,6 @@ export class TaskService {
         }
       })
     }
-  }
-
-  // 获取任务历史
-  async getHistories(taskId: string): Promise<TaskHistory[]> {
-    return prisma.taskHistory.findMany({
-      where: { taskId },
-      orderBy: { createdAt: 'desc' }
-    })
-  }
-
-  // 获取任务进度历史
-  async getProgressHistories(taskId: string): Promise<TaskProgressHistory[]> {
-    return prisma.taskProgressHistory.findMany({
-      where: { taskId },
-      orderBy: { createdAt: 'desc' }
-    })
-  }
-
-  // 获取项目的所有进度历史
-  async getProjectProgressHistories(projectId: string): Promise<TaskProgressHistory[]> {
-    return prisma.taskProgressHistory.findMany({
-      where: {
-        task: { projectId }
-      },
-      orderBy: { createdAt: 'desc' }
-    })
   }
 }
 

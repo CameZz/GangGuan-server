@@ -1,11 +1,14 @@
 {
-  "port": 3001,
-  "cors": {
-    "origin": ["http://localhost:3000"],
-    "credentials": true
-  },
-  "session": {
-    "secret": "gangguan-session-secret-key-2026",
-    "maxAge": 86400000
-  }
+    "port":  3001,
+    "cors":  {
+                 "origin":  [
+                                "http://localhost:3000"
+                            ],
+                 "credentials":  true
+             },
+    "session":  {
+                    "secret":  "gangguan-session-secret-key-2026",
+                    "maxAge":  86400000
+                },
+    "timezone":  "Asia/Shanghai"
 }

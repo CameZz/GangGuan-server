@@ -56,14 +56,14 @@ router.post('/:projectId/plannings', async (req: Request, res: Response) => {
     }
 
     const projectId = req.params.projectId as string
-    const { name, deadline } = req.body
+    const { name, color, deadline } = req.body
 
     if (!name) {
       sendError(res, ErrorCodes.VALIDATION_ERROR, '规划名称不能为空')
       return
     }
 
-    const planning = await planningService.create(projectId, { name, deadline })
+    const planning = await planningService.create(projectId, { name, color, deadline })
     broadcastAll('planning:create', planning)
     sendSuccess(res, { planning }, 201)
   } catch (error) {
@@ -94,8 +94,8 @@ router.put('/:projectId/plannings/:planningId', async (req: Request, res: Respon
       return
     }
 
-    const { name, deadline } = req.body
-    const planning = await planningService.update(id, { name, deadline })
+    const { name, color, deadline } = req.body
+    const planning = await planningService.update(id, { name, color, deadline })
     broadcastAll('planning:update', planning)
 
     sendSuccess(res, { planning })

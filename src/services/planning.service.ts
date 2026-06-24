@@ -6,12 +6,14 @@ import { prisma } from '../utils/prisma'
 // 创建规划参数
 interface CreatePlanningParams {
   name: string
+  color?: string | null
   deadline?: string | null
 }
 
 // 更新规划参数
 interface UpdatePlanningParams {
   name?: string
+  color?: string | null
   deadline?: string | null
 }
 
@@ -36,6 +38,7 @@ export class PlanningService {
     return prisma.planning.create({
       data: {
         name: data.name,
+        color: data.color || null,
         deadline: data.deadline ? new Date(data.deadline) : null,
         projectId
       }
@@ -48,6 +51,7 @@ export class PlanningService {
       where: { id },
       data: {
         name: data.name,
+        color: data.color !== undefined ? data.color : undefined,
         deadline: data.deadline ? new Date(data.deadline) : null
       }
     })

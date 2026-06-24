@@ -67,6 +67,7 @@ router.post('/', async (req: Request, res: Response) => {
       priority,
       dueDate,
       assigneeId,
+      phases,
       references,
       comments
     } = req.body
@@ -87,6 +88,7 @@ router.post('/', async (req: Request, res: Response) => {
       priority: priority || 'medium',
       dueDate,
       assigneeId,
+      phases,
       references,
       comments
     }, req.session.userId)
@@ -111,6 +113,12 @@ router.put('/:id', async (req: Request, res: Response) => {
       return
     }
 
+    // 权限检查：PM/管理员可修改所有字段，普通成员只能修改评论、参考资料、阶段进度
+    const currentUser = await prisma.user.findUnique({
+      where: { id: req.session.userId! }
+    })
+    const isPmOrAdmin = currentUser?.isAdmin || currentUser?.role === 'pm'
+
     const {
       title,
       description,
@@ -127,21 +135,53 @@ router.put('/:id', async (req: Request, res: Response) => {
       comments
     } = req.body
 
-    const task = await taskService.update(id, {
-      title,
-      description,
-      status,
-      priority,
-      dueDate,
-      assigneeId,
-      planningId,
-      parentRequirementId,
-      stage,
-      currentPhaseId,
-      phases,
-      references,
-      comments
-    }, req.session.userId)
+    let updateData: any
+
+    if (isPmOrAdmin) {
+      // PM/管理员：可修改所有字段
+      updateData = {
+        title,
+        description,
+        status,
+        priority,
+        dueDate,
+        assigneeId,
+        planningId,
+        parentRequirementId,
+        stage,
+        currentPhaseId,
+        phases,
+        references,
+        comments
+      }
+    } else {
+      // 普通成员：只能修改评论、参考资料、阶段进度（仅 progress）
+      let allowedPhases = undefined
+      if (phases !== undefined) {
+        // 只保留进度字段，其他字段使用已有值
+        allowedPhases = phases.map((phase: any) => {
+          const existingPhase = existingTask.phases.find((p: any) => p.id === phase.id)
+          return {
+            id: phase.id,
+            templateId: existingPhase?.templateId || phase.templateId,
+            name: existingPhase?.name || phase.name,
+            order: existingPhase?.order || phase.order,
+            progress: phase.progress,
+            status: existingPhase?.status || phase.status,
+            startTime: existingPhase?.startTime || phase.startTime,
+            endTime: existingPhase?.endTime || phase.endTime,
+            assigneeId: existingPhase?.assigneeId || phase.assigneeId
+          }
+        })
+      }
+      updateData = {
+        phases: allowedPhases,
+        references,
+        comments
+      }
+    }
+
+    const task = await taskService.update(id, updateData, req.session.userId)
 
     broadcastAll('task:update', task)
     sendSuccess(res, { task })
@@ -151,10 +191,19 @@ router.put('/:id', async (req: Request, res: Response) => {
   }
 })
 
-// DELETE /api/tasks/:id - 删除任务
+// DELETE /api/tasks/:id - 删除任务（仅 PM/管理员）
 router.delete('/:id', async (req: Request, res: Response) => {
   try {
     const id = req.params.id as string
+
+    // 权限检查
+    const currentUser = await prisma.user.findUnique({
+      where: { id: req.session.userId! }
+    })
+    if (!currentUser?.isAdmin && currentUser?.role !== 'pm') {
+      sendError(res, ErrorCodes.FORBIDDEN, '需要 PM 或管理员权限', 403)
+      return
+    }
 
     // 验证任务是否存在
     const existingTask = await taskService.getById(id)
@@ -177,10 +226,20 @@ router.delete('/:id', async (req: Request, res: Response) => {
   }
 })
 
-// PATCH /api/tasks/:id/move - 移动任务状态
+// PATCH /api/tasks/:id/move - 移动任务状态（仅 PM/管理员）
 router.patch('/:id/move', async (req: Request, res: Response) => {
   try {
     const id = req.params.id as string
+
+    // 权限检查
+    const currentUser = await prisma.user.findUnique({
+      where: { id: req.session.userId! }
+    })
+    if (!currentUser?.isAdmin && currentUser?.role !== 'pm') {
+      sendError(res, ErrorCodes.FORBIDDEN, '需要 PM 或管理员权限', 403)
+      return
+    }
+
     const { status } = req.body
 
     if (!status) {

@@ -11,6 +11,7 @@ type WSMessageType =
   | 'planning:create' | 'planning:update' | 'planning:delete'
   | 'user:login' | 'user:logout' | 'user:create' | 'user:update' | 'user:delete'
   | 'sync:init' | 'sync:update'
+  | 'notification:create' | 'notification:update' | 'notification:read-all'
 
 // 创建消息
 function createMessage(type: WSMessageType, payload: any): string {
