@@ -1,4 +1,4 @@
-import { Task, TaskPhase, TaskHistory, TaskProgressHistory } from '@prisma/client'
+import { Prisma, ReferenceType, TaskHistory, TaskProgressHistory } from '@prisma/client'
 import { prisma } from '../utils/prisma'
 import { generateId } from '../utils/id'
 import { notificationService } from './notification.service'
@@ -8,6 +8,17 @@ type TaskPriority = 'low' | 'medium' | 'high'
 type TaskItemType = 'requirement' | 'task'
 type TaskPhaseStatus = 'pending' | 'in-progress' | 'done'
 type TaskStage = 'filed' | 'designing' | 'initial' | 'preliminary' | 'final' | 'finalAcceptance' | 'completed'
+
+const taskWithRelationsInclude = {
+  phases: { orderBy: { order: 'asc' as const } },
+  references: true,
+  comments: true
+}
+
+const referenceTypes = new Set<ReferenceType>(['design', 'ui', 'document', 'link'])
+
+type TaskWithRelations = Prisma.TaskGetPayload<{ include: typeof taskWithRelationsInclude }>
+type PhaseLike = TaskWithRelations['phases'][number] | NormalizedTaskPhaseInput
 
 interface CreateTaskParams {
   projectId: string
@@ -82,7 +93,7 @@ type NormalizedTaskPhaseInput = {
 
 type NormalizedReferenceInput = {
   id: string
-  type: string
+  type: ReferenceType
   url: string
   title: string
   authorId: string | null
@@ -96,34 +107,39 @@ type NormalizedCommentInput = {
   createdAt: Date | undefined
 }
 
-type TaskWithRelations = Task & {
-  phases: TaskPhase[]
-  references: any[]
-  comments: any[]
-}
-
 export class TaskService {
   async getByProject(projectId: string): Promise<TaskWithRelations[]> {
-    return prisma.task.findMany({
+    const tasks = await prisma.task.findMany({
       where: { projectId },
       include: this.taskInclude(),
       orderBy: { createdAt: 'desc' }
     })
+    return this.withTemplateNames(tasks)
   }
 
   async getByPlanning(planningId: string): Promise<TaskWithRelations[]> {
-    return prisma.task.findMany({
+    const tasks = await prisma.task.findMany({
       where: { planningId },
       include: this.taskInclude(),
       orderBy: { createdAt: 'desc' }
     })
+    return this.withTemplateNames(tasks)
   }
 
   async getById(id: string): Promise<TaskWithRelations | null> {
-    return prisma.task.findUnique({
+    const task = await prisma.task.findUnique({
       where: { id },
       include: this.taskInclude()
     })
+    return task ? this.withTemplateName(task) : null
+  }
+
+  async getAll(): Promise<TaskWithRelations[]> {
+    const tasks = await prisma.task.findMany({
+      include: this.taskInclude(),
+      orderBy: { createdAt: 'desc' }
+    })
+    return this.withTemplateNames(tasks)
   }
 
   async create(data: CreateTaskParams, operatorId?: string): Promise<TaskWithRelations> {
@@ -132,7 +148,7 @@ export class TaskService {
     const comments = this.normalizeCommentInputs(data.comments, operatorId)
 
     if (itemType === 'requirement') {
-      return prisma.task.create({
+      return this.withTemplateName(await prisma.task.create({
         data: {
           itemType: 'requirement',
           parentRequirementId: null,
@@ -150,7 +166,7 @@ export class TaskService {
           comments: { create: comments }
         },
         include: this.taskInclude()
-      })
+      }))
     }
 
     const templates = await prisma.projectPhaseTemplate.findMany({
@@ -172,11 +188,11 @@ export class TaskService {
           endTime: null
         }))
 
-    const currentPhase = this.getCurrentPhase(phases as TaskPhase[])
-    const status = this.deriveStatusFromPhases(phases as TaskPhase[], 'todo')
-    const stage = this.deriveStageFromPhase(currentPhase as TaskPhase | null)
+    const currentPhase = this.getCurrentPhase(phases)
+    const status = this.deriveStatusFromPhases(phases, 'todo')
+    const stage = this.deriveStageFromPhase(currentPhase)
 
-    return prisma.task.create({
+    return this.withTemplateName(await prisma.task.create({
       data: {
         itemType: 'task',
         parentRequirementId: parentRequirementId || null,
@@ -207,12 +223,12 @@ export class TaskService {
         }
       },
       include: this.taskInclude()
-    })
+    }))
   }
 
   async update(id: string, data: UpdateTaskParams, operatorId?: string): Promise<TaskWithRelations> {
     const existingTask = await this.getById(id)
-    if (!existingTask) throw new Error('任务不存在')
+    if (!existingTask) throw new Error('Task not found')
 
     const isRequirement = existingTask.itemType === 'requirement'
     const phases = isRequirement
@@ -220,19 +236,20 @@ export class TaskService {
       : data.phases !== undefined
         ? this.normalizeTaskPhaseInputs(data.phases)
         : existingTask.phases
-    const currentPhase = this.getCurrentPhase(phases as TaskPhase[])
+
+    const currentPhase = this.getCurrentPhase(phases)
     const statusChanged = data.status !== undefined && data.status !== existingTask.status
     const nextStatus = isRequirement
       ? 'todo'
       : statusChanged
         ? data.status!
         : data.phases !== undefined
-          ? this.deriveStatusFromPhases(phases as TaskPhase[], (data.status || existingTask.status) as TaskStatus)
+          ? this.deriveStatusFromPhases(phases, (data.status || existingTask.status) as TaskStatus)
           : (data.status || existingTask.status) as TaskStatus
     const nextStage = isRequirement
       ? 'filed'
       : data.phases !== undefined
-        ? this.deriveStageFromPhase(currentPhase as TaskPhase | null)
+        ? this.deriveStageFromPhase(currentPhase)
         : (data.stage || existingTask.stage) as TaskStage
     const nextCurrentPhaseId = isRequirement
       ? null
@@ -352,16 +369,16 @@ export class TaskService {
       }
     }
 
-    return task
+    return this.withTemplateName(task)
   }
 
   async delete(id: string): Promise<void> {
     const task = await this.getById(id)
-    if (!task) throw new Error('任务不存在')
+    if (!task) throw new Error('Task not found')
 
     if (task.itemType === 'requirement') {
       const childCount = await prisma.task.count({ where: { parentRequirementId: id } })
-      if (childCount > 0) throw new Error('需求单下有子任务，不能删除')
+      if (childCount > 0) throw new Error('Requirement has child tasks')
     }
 
     await prisma.task.delete({ where: { id } })
@@ -369,7 +386,7 @@ export class TaskService {
 
   async move(id: string, status: TaskStatus, operatorId?: string): Promise<TaskWithRelations> {
     const task = await this.getById(id)
-    if (!task) throw new Error('任务不存在')
+    if (!task) throw new Error('Task not found')
 
     if (operatorId && task.status !== status) {
       await prisma.taskHistory.create({
@@ -377,19 +394,20 @@ export class TaskService {
       })
     }
 
-    return prisma.task.update({
+    const updatedTask = await prisma.task.update({
       where: { id },
       data: { status, updatedAt: new Date() },
       include: this.taskInclude()
     })
+    return this.withTemplateName(updatedTask)
   }
 
   async updatePhaseProgress(taskId: string, phaseId: string, progress: number, operatorId: string): Promise<TaskWithRelations> {
     const task = await this.getById(taskId)
-    if (!task) throw new Error('任务不存在')
+    if (!task) throw new Error('Task not found')
 
-    const phase = task.phases.find(p => p.id === phaseId)
-    if (!phase) throw new Error('阶段不存在')
+    const phase = task.phases.find(item => item.id === phaseId)
+    if (!phase) throw new Error('Phase not found')
 
     const clampedProgress = Math.max(0, Math.min(100, Math.round(Number(progress))))
     const phaseStatus = this.getPhaseStatus(clampedProgress)
@@ -419,7 +437,7 @@ export class TaskService {
     })
 
     const updatedTask = await this.getById(taskId)
-    if (!updatedTask) throw new Error('任务不存在')
+    if (!updatedTask) throw new Error('Task not found')
 
     const newCurrentPhase = this.getCurrentPhase(updatedTask.phases)
     await prisma.task.update({
@@ -451,16 +469,34 @@ export class TaskService {
     })
   }
 
-  private taskInclude() {
-    return {
-      phases: { orderBy: { order: 'asc' as const } },
-      references: true,
-      comments: true
-    }
+  private async withTemplateName(task: TaskWithRelations): Promise<TaskWithRelations> {
+    return (await this.withTemplateNames([task]))[0]
   }
 
-  private getCurrentPhase(phases: TaskPhase[]): TaskPhase | null {
-    return phases.find(p => p.status !== 'done') || phases[phases.length - 1] || null
+  private async withTemplateNames(tasks: TaskWithRelations[]): Promise<TaskWithRelations[]> {
+    const templateIds = [...new Set(tasks.flatMap(task => task.phases.map(phase => phase.templateId)).filter(Boolean))]
+    if (templateIds.length === 0) return tasks
+
+    const templates = await prisma.projectPhaseTemplate.findMany({
+      where: { id: { in: templateIds } },
+      select: { id: true, name: true }
+    })
+    const templateNames = new Map(templates.map(template => [template.id, template.name]))
+
+    return tasks.map(task => ({
+      ...task,
+      phases: task.phases.map(phase => {
+        const templateName = templateNames.get(phase.templateId)
+        return templateName ? { ...phase, name: templateName } : phase
+      })
+    }))
+  }
+  private taskInclude() {
+    return taskWithRelationsInclude
+  }
+
+  private getCurrentPhase(phases: PhaseLike[]): PhaseLike | null {
+    return phases.find(phase => phase.status !== 'done') || phases[phases.length - 1] || null
   }
 
   private getPhaseStatus(progress: number): TaskPhaseStatus {
@@ -495,13 +531,19 @@ export class TaskService {
     return references
       .map(reference => ({
         id: reference.id || generateId(),
-        type: reference.type || 'link',
+        type: this.normalizeReferenceType(reference.type),
         url: (reference.url || '').trim(),
         title: (reference.title || '').trim(),
         authorId: reference.authorId || fallbackAuthorId || null,
         createdAt: this.toNullableDate(reference.createdAt) || undefined
       }))
       .filter(reference => reference.url || reference.title)
+  }
+
+  private normalizeReferenceType(value: unknown): ReferenceType {
+    return typeof value === 'string' && referenceTypes.has(value as ReferenceType)
+      ? value as ReferenceType
+      : 'link'
   }
 
   private normalizeCommentInputs(comments: UpdateCommentParams[] = [], fallbackAuthorId?: string): NormalizedCommentInput[] {
@@ -528,27 +570,19 @@ export class TaskService {
     return Number.isNaN(date.getTime()) ? String(value) : date.toISOString()
   }
 
-  private deriveStageFromPhase(phase: TaskPhase | null): TaskStage {
+  private deriveStageFromPhase(phase: PhaseLike | null): TaskStage {
     if (!phase) return 'filed'
     const byOrder: TaskStage[] = ['filed', 'designing', 'initial', 'preliminary', 'final', 'finalAcceptance', 'completed']
-    const order = Number((phase as any).order)
+    const order = Number(phase.order)
     if (Number.isFinite(order) && byOrder[order]) return byOrder[order]
-
-    const name = phase.name || ''
-    if (name.includes('设计')) return 'designing'
-    if (name.includes('初版实现')) return 'initial'
-    if (name.includes('初步验收')) return 'preliminary'
-    if (name.includes('终版完成')) return 'final'
-    if (name.includes('最终验收')) return 'finalAcceptance'
-    if (name.includes('完成')) return 'completed'
     return 'filed'
   }
 
-  private deriveStatusFromPhases(phases: TaskPhase[], currentStatus: TaskStatus): TaskStatus {
+  private deriveStatusFromPhases(phases: PhaseLike[], currentStatus: TaskStatus): TaskStatus {
     if (currentStatus === 'abandoned') return 'abandoned'
     if (phases.length === 0) return currentStatus
-    if (phases.every(p => p.status === 'done')) return 'done'
-    if (phases.some(p => p.status === 'in-progress')) return 'in-progress'
+    if (phases.every(phase => phase.status === 'done')) return 'done'
+    if (phases.some(phase => phase.status === 'in-progress')) return 'in-progress'
     return 'todo'
   }
 
@@ -573,7 +607,7 @@ export class TaskService {
 
   private async recordProgressHistories(
     taskId: string,
-    oldPhases: TaskPhase[],
+    oldPhases: TaskWithRelations['phases'],
     newPhases: NormalizedTaskPhaseInput[],
     operatorId: string
   ): Promise<void> {

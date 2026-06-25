@@ -1,4 +1,4 @@
-// 钢管系统数据库 Schema
+// 閽㈢绯荤粺鏁版嵁搴?Schema
 
 generator client {
   provider = "prisma-client-js"
@@ -8,22 +8,78 @@ datasource db {
   provider = "mysql"
   url      = env("DATABASE_URL")
 }
+enum RoleType {
+  pm
+  planner
+  artist
+  ui
+  server
+  client
+  devops
+  animator
+  sound
+  tester
+}
 
-// ============ 用户 ============
+enum TaskItemType {
+  requirement
+  task
+}
+
+enum TaskPriority {
+  low
+  medium
+  high
+}
+
+enum TaskStage {
+  filed
+  designing
+  initial
+  preliminary
+  final
+  finalAcceptance
+  completed
+}
+
+enum ReferenceType {
+  design
+  ui
+  document
+  link
+}
+
+enum NotificationType {
+  progress_update
+  behind_progress
+  comment
+  reference
+  approval_submitted
+  approval_approved
+  approval_rejected
+}
+
+enum ApprovalStatus {
+  pending
+  approved
+  rejected
+}
+
+// ============ 鐢ㄦ埛 ============
 model User {
   id         String   @id @default(uuid())
-  employeeId String   @unique @map("employee_id")        // 工号
-  password   String                                      // bcrypt 加密
+  employeeId String   @unique @map("employee_id")        // 宸ュ彿
+  password   String                                      // bcrypt 鍔犲瘑
   name       String
   phone      String
   email      String
   avatar     String
-  role       String                                      // RoleType 枚举
+  role       String                                      // RoleType 鏋氫妇
   isAdmin    Boolean  @default(false) @map("is_admin")
   createdAt  DateTime @default(now()) @map("created_at")
   updatedAt  DateTime @updatedAt @map("updated_at")
 
-  // 关系
+  // 鍏崇郴
   assignedPhases     TaskPhase[]              @relation("PhaseAssignee")
   comments           Comment[]
   references         Reference[]              @relation("ReferenceAuthor")
@@ -39,18 +95,18 @@ model User {
   @@map("users")
 }
 
-// ============ 项目 ============
+// ============ 椤圭洰 ============
 model Project {
   id             String   @id @default(uuid())
   name           String
   description    String
   createdAt      DateTime @default(now()) @map("created_at")
 
-  // JSON 存储数组字段
+  // JSON 瀛樺偍鏁扮粍瀛楁
   nonWorkdays    Json     @map("non_workdays")     // string[]
   extraWorkdays  Json     @map("extra_workdays")    // string[]
 
-  // 关系
+  // 鍏崇郴
   phaseTemplates  ProjectPhaseTemplate[]
   plannings       Planning[]
   tasks           Task[]
@@ -60,7 +116,7 @@ model Project {
   @@map("projects")
 }
 
-// ============ 项目阶段模板 ============
+// ============ 椤圭洰闃舵妯℃澘 ============
 model ProjectPhaseTemplate {
   id        String   @id @default(uuid())
   name      String
@@ -76,7 +132,7 @@ model ProjectPhaseTemplate {
   @@map("project_phase_templates")
 }
 
-// ============ 规划 ============
+// ============ 瑙勫垝 ============
 model Planning {
   id        String    @id @default(uuid())
   name      String
@@ -93,18 +149,18 @@ model Planning {
   @@map("plannings")
 }
 
-// ============ 任务 ============
+// ============ 浠诲姟 ============
 model Task {
   id                  String    @id @default(uuid())
-  itemType            String    @map("item_type")           // 'requirement' | 'task'
+  itemType            TaskItemType @map("item_type")
   parentRequirementId String?   @map("parent_requirement_id")
   title               String
   description         String    @db.Text
   status              String                              // TaskStatus
-  priority            String                              // TaskPriority
+  priority            TaskPriority
   dueDate             DateTime? @map("due_date")
   assigneeId          String?   @map("assignee_id")
-  stage               String                              // TaskStage (兼容旧字段)
+  stage               String                              // TaskStage (鍏煎鏃у瓧娈?
   currentPhaseId      String?   @map("current_phase_id")
   createdAt           DateTime  @default(now()) @map("created_at")
   updatedAt           DateTime  @updatedAt @map("updated_at")
@@ -115,7 +171,7 @@ model Task {
   planningId String?  @map("planning_id")
   planning   Planning? @relation(fields: [planningId], references: [id], onDelete: SetNull)
 
-  // 关系
+  // 鍏崇郴
   phases            TaskPhase[]
   references        Reference[]
   comments          Comment[]
@@ -129,10 +185,10 @@ model Task {
   @@map("tasks")
 }
 
-// ============ 任务阶段 ============
+// ============ 浠诲姟闃舵 ============
 model TaskPhase {
   id         String    @id @default(uuid())
-  templateId String    @map("template_id")     // 来源模板 ID
+  templateId String    @map("template_id")     // 鏉ユ簮妯℃澘 ID
   name       String
   order      Int
   progress   Int       @default(0)             // 0-100
@@ -146,7 +202,7 @@ model TaskPhase {
   taskId     String    @map("task_id")
   task       Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
 
-  // 反向关系
+  // 鍙嶅悜鍏崇郴
   progressHistories TaskProgressHistory[]
   notifications     Notification[]
 
@@ -155,10 +211,10 @@ model TaskPhase {
   @@map("task_phases")
 }
 
-// ============ 参考资料 ============
+// ============ 鍙傝€冭祫鏂?============
 model Reference {
   id        String   @id @default(uuid())
-  type      String                              // 'design' | 'ui' | 'document' | 'link'
+  type      ReferenceType
   url       String
   title     String
   createdAt DateTime @default(now()) @map("created_at")
@@ -176,7 +232,7 @@ model Reference {
 // ============ Personal notifications ============
 model Notification {
   id        String    @id @default(uuid())
-  type      String
+  type      NotificationType
   title     String
   body      String    @db.Text
   dedupeKey String?   @unique @map("dedupe_key")
@@ -204,7 +260,7 @@ model Notification {
   @@map("notifications")
 }
 
-// ============ 评论 ============
+// ============ 璇勮 ============
 model Comment {
   id        String   @id @default(uuid())
   content   String   @db.Text
@@ -221,10 +277,10 @@ model Comment {
   @@map("comments")
 }
 
-// ============ 任务历史 ============
+// ============ 浠诲姟鍘嗗彶 ============
 model TaskHistory {
   id        String   @id @default(uuid())
-  field     String                              // 变更字段
+  field     String                              // 鍙樻洿瀛楁
   oldValue  String   @map("old_value")
   newValue  String   @map("new_value")
   createdAt DateTime @default(now()) @map("created_at")
@@ -240,7 +296,7 @@ model TaskHistory {
   @@map("task_histories")
 }
 
-// ============ 进度历史 ============
+// ============ 杩涘害鍘嗗彶 ============
 model TaskProgressHistory {
   id          String   @id @default(uuid())
   phaseName   String   @map("phase_name")
@@ -266,13 +322,13 @@ model TaskProgressHistory {
   @@map("task_progress_histories")
 }
 
-// ============ 任务申请审批 ============
+// ============ 浠诲姟鐢宠瀹℃壒 ============
 model TaskApprovalRequest {
   id            String    @id @default(uuid())
   title         String
   remark        String    @db.Text
   phaseSnapshot Json      @map("phase_snapshot")   // [{name, assigneeId}]
-  status        String    @default("pending")      // pending / approved / rejected
+  status        ApprovalStatus @default(pending)
   reviewComment String?   @map("review_comment") @db.Text
   reviewedAt    DateTime? @map("reviewed_at")
   createdAt     DateTime  @default(now()) @map("created_at")
@@ -298,11 +354,11 @@ model TaskApprovalRequest {
   @@map("task_approval_requests")
 }
 
-// ============ 每日备注 ============
+// ============ 姣忔棩澶囨敞 ============
 model DailyNote {
   id        String   @id @default(uuid())
   content   String   @db.Text
-  dateKey   String   @map("date_key")                       // "2026-06-24" 格式
+  dateKey   String   @map("date_key")                       // "2026-06-24" 鏍煎紡
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 

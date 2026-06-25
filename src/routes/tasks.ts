@@ -1,6 +1,4 @@
-// 任务路由
-
-import { Router, Request, Response } from 'express'
+﻿import { Router, Request, Response } from 'express'
 import { taskService } from '../services/task.service'
 import { sendSuccess, sendError, ErrorCodes } from '../utils/response'
 import { requireAuth } from '../middleware/auth'
@@ -9,54 +7,107 @@ import { broadcastAll } from '../ws/broadcast'
 
 const router = Router()
 
-// 所有路由需要登录
 router.use(requireAuth)
 
-// GET /api/projects/:projectId/tasks - 获取项目的所有任务
+async function getCurrentUser(userId: string) {
+  return prisma.user.findUnique({ where: { id: userId } })
+}
+
+function canManage(user: { isAdmin: boolean; role: string } | null | undefined): boolean {
+  return !!user && (user.isAdmin || user.role === 'pm')
+}
+
+async function planningBelongsToProject(projectId: string, planningId?: string | null): Promise<boolean> {
+  if (!planningId) return true
+  const planning = await prisma.planning.findUnique({ where: { id: planningId } })
+  return !!planning && planning.projectId === projectId
+}
+
+async function parentRequirementBelongsToProject(projectId: string, parentRequirementId?: string | null): Promise<boolean> {
+  if (!parentRequirementId) return true
+  const requirement = await prisma.task.findUnique({ where: { id: parentRequirementId } })
+  return !!requirement && requirement.projectId === projectId && requirement.itemType === 'requirement'
+}
+
+function preserveExistingReferences(existingTask: any, incoming: any[] | undefined, operatorId: string) {
+  if (incoming === undefined) return undefined
+  if (!Array.isArray(incoming)) return null
+
+  const existingIds = new Set((existingTask.references || []).map((reference: any) => reference.id))
+  const additions = incoming
+    .filter(reference => !reference?.id || !existingIds.has(reference.id))
+    .map(reference => ({
+      type: reference.type || 'link',
+      url: reference.url || '',
+      title: reference.title || '',
+      authorId: operatorId
+    }))
+
+  return [...(existingTask.references || []), ...additions]
+}
+
+function preserveExistingComments(existingTask: any, incoming: any[] | undefined, operatorId: string) {
+  if (incoming === undefined) return undefined
+  if (!Array.isArray(incoming)) return null
+
+  const existingIds = new Set((existingTask.comments || []).map((comment: any) => comment.id))
+  const additions = incoming
+    .filter(comment => !comment?.id || !existingIds.has(comment.id))
+    .map(comment => ({
+      content: comment.content || '',
+      authorId: operatorId
+    }))
+
+  return [...(existingTask.comments || []), ...additions]
+}
+
 router.get('/project/:projectId', async (req: Request, res: Response) => {
   try {
     const projectId = req.params.projectId as string
     const tasks = await taskService.getByProject(projectId)
     sendSuccess(res, { tasks })
   } catch (error) {
-    console.error('获取任务列表失败:', error)
-    sendError(res, ErrorCodes.INTERNAL_ERROR, '获取任务列表失败', 500)
+    console.error('Failed to list project tasks:', error)
+    sendError(res, ErrorCodes.INTERNAL_ERROR, 'Failed to list tasks', 500)
   }
 })
 
-// GET /api/plannings/:planningId/tasks - 获取规划的所有任务
 router.get('/planning/:planningId', async (req: Request, res: Response) => {
   try {
     const planningId = req.params.planningId as string
     const tasks = await taskService.getByPlanning(planningId)
     sendSuccess(res, { tasks })
   } catch (error) {
-    console.error('获取任务列表失败:', error)
-    sendError(res, ErrorCodes.INTERNAL_ERROR, '获取任务列表失败', 500)
+    console.error('Failed to list planning tasks:', error)
+    sendError(res, ErrorCodes.INTERNAL_ERROR, 'Failed to list tasks', 500)
   }
 })
 
-// GET /api/tasks/:id - 获取单个任务
 router.get('/:id', async (req: Request, res: Response) => {
   try {
     const id = req.params.id as string
     const task = await taskService.getById(id)
 
     if (!task) {
-      sendError(res, ErrorCodes.NOT_FOUND, '任务不存在', 404)
+      sendError(res, ErrorCodes.NOT_FOUND, 'Task not found', 404)
       return
     }
 
     sendSuccess(res, { task })
   } catch (error) {
-    console.error('获取任务失败:', error)
-    sendError(res, ErrorCodes.INTERNAL_ERROR, '获取任务失败', 500)
+    console.error('Failed to get task:', error)
+    sendError(res, ErrorCodes.INTERNAL_ERROR, 'Failed to get task', 500)
   }
 })
 
-// POST /api/tasks - 创建任务
 router.post('/', async (req: Request, res: Response) => {
   try {
+    const currentUser = await getCurrentUser(req.session.userId!)
+    if (!canManage(currentUser)) {
+      sendError(res, ErrorCodes.FORBIDDEN, 'PM or admin permission required', 403)
+      return
+    }
+
     const {
       projectId,
       planningId,
@@ -72,9 +123,18 @@ router.post('/', async (req: Request, res: Response) => {
       comments
     } = req.body
 
-    // 参数验证
     if (!projectId || !itemType || !title) {
-      sendError(res, ErrorCodes.VALIDATION_ERROR, '项目ID、任务类型和标题不能为空')
+      sendError(res, ErrorCodes.VALIDATION_ERROR, 'projectId, itemType and title are required')
+      return
+    }
+
+    if (!(await planningBelongsToProject(projectId, planningId))) {
+      sendError(res, ErrorCodes.VALIDATION_ERROR, 'Planning does not belong to the project', 400)
+      return
+    }
+
+    if (!(await parentRequirementBelongsToProject(projectId, parentRequirementId))) {
+      sendError(res, ErrorCodes.VALIDATION_ERROR, 'Parent requirement does not belong to the project', 400)
       return
     }
 
@@ -96,28 +156,22 @@ router.post('/', async (req: Request, res: Response) => {
     broadcastAll('task:create', task)
     sendSuccess(res, { task }, 201)
   } catch (error) {
-    console.error('创建任务失败:', error)
-    sendError(res, ErrorCodes.INTERNAL_ERROR, '创建任务失败', 500)
+    console.error('Failed to create task:', error)
+    sendError(res, ErrorCodes.INTERNAL_ERROR, 'Failed to create task', 500)
   }
 })
 
-// PUT /api/tasks/:id - 更新任务
 router.put('/:id', async (req: Request, res: Response) => {
   try {
     const id = req.params.id as string
-
-    // 验证任务是否存在
     const existingTask = await taskService.getById(id)
     if (!existingTask) {
-      sendError(res, ErrorCodes.NOT_FOUND, '任务不存在', 404)
+      sendError(res, ErrorCodes.NOT_FOUND, 'Task not found', 404)
       return
     }
 
-    // 权限检查：PM/管理员可修改所有字段，普通成员只能修改评论、参考资料、阶段进度
-    const currentUser = await prisma.user.findUnique({
-      where: { id: req.session.userId! }
-    })
-    const isPmOrAdmin = currentUser?.isAdmin || currentUser?.role === 'pm'
+    const currentUser = await getCurrentUser(req.session.userId!)
+    const isPmOrAdmin = canManage(currentUser)
 
     const {
       title,
@@ -138,7 +192,16 @@ router.put('/:id', async (req: Request, res: Response) => {
     let updateData: any
 
     if (isPmOrAdmin) {
-      // PM/管理员：可修改所有字段
+      if (!(await planningBelongsToProject(existingTask.projectId, planningId))) {
+        sendError(res, ErrorCodes.VALIDATION_ERROR, 'Planning does not belong to the project', 400)
+        return
+      }
+
+      if (!(await parentRequirementBelongsToProject(existingTask.projectId, parentRequirementId))) {
+        sendError(res, ErrorCodes.VALIDATION_ERROR, 'Parent requirement does not belong to the project', 400)
+        return
+      }
+
       updateData = {
         title,
         description,
@@ -155,29 +218,41 @@ router.put('/:id', async (req: Request, res: Response) => {
         comments
       }
     } else {
-      // 普通成员：只能修改评论、参考资料、阶段进度（仅 progress）
-      let allowedPhases = undefined
-      if (phases !== undefined) {
-        // 只保留进度字段，其他字段使用已有值
-        allowedPhases = phases.map((phase: any) => {
-          const existingPhase = existingTask.phases.find((p: any) => p.id === phase.id)
-          return {
-            id: phase.id,
-            templateId: existingPhase?.templateId || phase.templateId,
-            name: existingPhase?.name || phase.name,
-            order: existingPhase?.order || phase.order,
-            progress: phase.progress,
-            status: existingPhase?.status || phase.status,
-            startTime: existingPhase?.startTime || phase.startTime,
-            endTime: existingPhase?.endTime || phase.endTime,
-            assigneeId: existingPhase?.assigneeId || phase.assigneeId
-          }
-        })
+      const hasRestrictedFields = [
+        title,
+        description,
+        status,
+        priority,
+        dueDate,
+        assigneeId,
+        planningId,
+        parentRequirementId,
+        stage,
+        currentPhaseId,
+        phases
+      ].some(value => value !== undefined)
+
+      if (hasRestrictedFields) {
+        sendError(res, ErrorCodes.FORBIDDEN, 'PM or admin permission required', 403)
+        return
       }
+
+      const safeReferences = preserveExistingReferences(existingTask, references, req.session.userId!)
+      const safeComments = preserveExistingComments(existingTask, comments, req.session.userId!)
+
+      if (safeReferences === null || safeComments === null) {
+        sendError(res, ErrorCodes.VALIDATION_ERROR, 'references and comments must be arrays', 400)
+        return
+      }
+
+      if (safeReferences === undefined && safeComments === undefined) {
+        sendError(res, ErrorCodes.FORBIDDEN, 'No editable fields provided', 403)
+        return
+      }
+
       updateData = {
-        phases: allowedPhases,
-        references,
-        comments
+        references: safeReferences,
+        comments: safeComments
       }
     }
 
@@ -186,64 +261,53 @@ router.put('/:id', async (req: Request, res: Response) => {
     broadcastAll('task:update', task)
     sendSuccess(res, { task })
   } catch (error) {
-    console.error('更新任务失败:', error)
-    sendError(res, ErrorCodes.INTERNAL_ERROR, '更新任务失败', 500)
+    console.error('Failed to update task:', error)
+    sendError(res, ErrorCodes.INTERNAL_ERROR, 'Failed to update task', 500)
   }
 })
 
-// DELETE /api/tasks/:id - 删除任务（仅 PM/管理员）
 router.delete('/:id', async (req: Request, res: Response) => {
   try {
     const id = req.params.id as string
-
-    // 权限检查
-    const currentUser = await prisma.user.findUnique({
-      where: { id: req.session.userId! }
-    })
-    if (!currentUser?.isAdmin && currentUser?.role !== 'pm') {
-      sendError(res, ErrorCodes.FORBIDDEN, '需要 PM 或管理员权限', 403)
+    const currentUser = await getCurrentUser(req.session.userId!)
+    if (!canManage(currentUser)) {
+      sendError(res, ErrorCodes.FORBIDDEN, 'PM or admin permission required', 403)
       return
     }
 
-    // 验证任务是否存在
     const existingTask = await taskService.getById(id)
     if (!existingTask) {
-      sendError(res, ErrorCodes.NOT_FOUND, '任务不存在', 404)
+      sendError(res, ErrorCodes.NOT_FOUND, 'Task not found', 404)
       return
     }
 
     await taskService.delete(id)
 
     broadcastAll('task:delete', { id })
-    sendSuccess(res, { message: '任务已删除' })
+    sendSuccess(res, { message: 'Task deleted' })
   } catch (error: any) {
-    console.error('删除任务失败:', error)
+    console.error('Failed to delete task:', error)
     if (error.message === '需求单下有子任务，不能删除') {
       sendError(res, ErrorCodes.TASK_HAS_CHILDREN, error.message, 400)
     } else {
-      sendError(res, ErrorCodes.INTERNAL_ERROR, '删除任务失败', 500)
+      sendError(res, ErrorCodes.INTERNAL_ERROR, 'Failed to delete task', 500)
     }
   }
 })
 
-// PATCH /api/tasks/:id/move - 移动任务状态（仅 PM/管理员）
 router.patch('/:id/move', async (req: Request, res: Response) => {
   try {
     const id = req.params.id as string
-
-    // 权限检查
-    const currentUser = await prisma.user.findUnique({
-      where: { id: req.session.userId! }
-    })
-    if (!currentUser?.isAdmin && currentUser?.role !== 'pm') {
-      sendError(res, ErrorCodes.FORBIDDEN, '需要 PM 或管理员权限', 403)
+    const currentUser = await getCurrentUser(req.session.userId!)
+    if (!canManage(currentUser)) {
+      sendError(res, ErrorCodes.FORBIDDEN, 'PM or admin permission required', 403)
       return
     }
 
     const { status } = req.body
 
     if (!status) {
-      sendError(res, ErrorCodes.VALIDATION_ERROR, '状态不能为空')
+      sendError(res, ErrorCodes.VALIDATION_ERROR, 'status is required')
       return
     }
 
@@ -251,38 +315,56 @@ router.patch('/:id/move', async (req: Request, res: Response) => {
     broadcastAll('task:update', task)
     sendSuccess(res, { task })
   } catch (error) {
-    console.error('移动任务失败:', error)
-    sendError(res, ErrorCodes.INTERNAL_ERROR, '移动任务失败', 500)
+    console.error('Failed to move task:', error)
+    sendError(res, ErrorCodes.INTERNAL_ERROR, 'Failed to move task', 500)
   }
 })
 
-// PATCH /api/tasks/:id/phases/:phaseId/progress - 更新阶段进度
 router.patch('/:id/phases/:phaseId/progress', async (req: Request, res: Response) => {
   try {
     const taskId = req.params.id as string
     const phaseId = req.params.phaseId as string
     const { progress } = req.body
+    const numericProgress = Number(progress)
 
-    if (progress === undefined || progress === null) {
-      sendError(res, ErrorCodes.VALIDATION_ERROR, '进度不能为空')
+    if (progress === undefined || progress === null || !Number.isFinite(numericProgress)) {
+      sendError(res, ErrorCodes.VALIDATION_ERROR, 'progress must be a number')
+      return
+    }
+
+    const taskBeforeUpdate = await taskService.getById(taskId)
+    if (!taskBeforeUpdate) {
+      sendError(res, ErrorCodes.NOT_FOUND, 'Task not found', 404)
+      return
+    }
+
+    const phase = taskBeforeUpdate.phases.find((item: any) => item.id === phaseId)
+    if (!phase) {
+      sendError(res, ErrorCodes.NOT_FOUND, 'Phase not found', 404)
+      return
+    }
+
+    const currentUser = await getCurrentUser(req.session.userId!)
+    if (!canManage(currentUser) && phase.assigneeId !== req.session.userId) {
+      sendError(res, ErrorCodes.FORBIDDEN, 'Can only update your assigned phase', 403)
       return
     }
 
     const task = await taskService.updatePhaseProgress(
       taskId,
       phaseId,
-      progress,
+      numericProgress,
       req.session.userId!
     )
 
     broadcastAll('task:update', task)
     sendSuccess(res, { task })
   } catch (error: any) {
-    console.error('更新阶段进度失败:', error)
+    console.error('Failed to update phase progress:', error)
     if (error.message === '任务不存在' || error.message === '阶段不存在') {
       sendError(res, ErrorCodes.NOT_FOUND, error.message, 404)
     } else {
-      sendError(res, ErrorCodes.INTERNAL_ERROR, '更新阶段进度失败', 500)
+      sendError(res, ErrorCodes.INTERNAL_ERROR, 'Failed to update phase progress', 500)
     }
   }
 })

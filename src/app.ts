@@ -1,9 +1,9 @@
 import express from 'express'
 import cors from 'cors'
-import session from 'express-session'
 import { createServer } from 'http'
 import { config } from './config'
 import { errorHandler } from './middleware/errorHandler'
+import { sessionMiddleware } from './middleware/session'
 import { prisma } from './utils/prisma'
 
 import authRoutes from './routes/auth'
@@ -30,16 +30,7 @@ app.use(cors({
 
 app.use(express.json())
 
-app.use(session({
-  secret: config.session.secret,
-  resave: false,
-  saveUninitialized: false,
-  cookie: {
-    maxAge: config.session.maxAge,
-    httpOnly: true,
-    secure: false
-  }
-}))
+app.use(sessionMiddleware)
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() })
