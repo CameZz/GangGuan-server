@@ -240,7 +240,7 @@ export class TaskService {
     const currentPhase = this.getCurrentPhase(phases)
     const statusChanged = data.status !== undefined && data.status !== existingTask.status
     const nextStatus = isRequirement
-      ? 'todo'
+      ? existingTask.status
       : statusChanged
         ? data.status!
         : data.phases !== undefined
@@ -369,6 +369,12 @@ export class TaskService {
       }
     }
 
+    // 子任务状态变化后，同步更新父需求单状态
+    const parentReqId = task.parentRequirementId || (isRequirement ? id : null)
+    if (parentReqId) {
+      await this.syncParentRequirementStatus(parentReqId)
+    }
+
     return this.withTemplateName(task)
   }
 
@@ -401,6 +407,12 @@ export class TaskService {
       data: { status, updatedAt: new Date() },
       include: this.taskInclude()
     })
+
+    // 子任务状态变化后，同步更新父需求单状态
+    if (updatedTask.parentRequirementId) {
+      await this.syncParentRequirementStatus(updatedTask.parentRequirementId)
+    }
+
     return this.withTemplateName(updatedTask)
   }
 
@@ -442,16 +454,22 @@ export class TaskService {
     if (!updatedTask) throw new Error('Task not found')
 
     const newCurrentPhase = this.getCurrentPhase(updatedTask.phases)
+    const newStatus = this.deriveStatusFromPhases(updatedTask.phases, task.status as TaskStatus)
     await prisma.task.update({
       where: { id: taskId },
       data: {
-        status: this.deriveStatusFromPhases(updatedTask.phases, task.status as TaskStatus),
+        status: newStatus,
         stage: this.deriveStageFromPhase(newCurrentPhase),
         currentPhaseId: newCurrentPhase?.id || null,
         assigneeId: newCurrentPhase?.assigneeId || task.assigneeId,
         updatedAt: new Date()
       }
     })
+
+    // 子任务状态变化后，同步更新父需求单状态
+    if (task.parentRequirementId && newStatus !== task.status) {
+      await this.syncParentRequirementStatus(task.parentRequirementId)
+    }
 
     return (await this.getById(taskId))!
   }
@@ -588,6 +606,28 @@ export class TaskService {
     if (progresses.every(progress => progress === 0)) return 'todo'
     if (progresses.every(progress => progress === 100)) return 'done'
     return 'in-progress'
+  }
+
+  // 根据子任务状态推导需求单状态（忽略 abandoned 的子任务）
+  private async deriveRequirementStatus(requirementId: string): Promise<TaskStatus> {
+    const children = await prisma.task.findMany({
+      where: { parentRequirementId: requirementId },
+      select: { status: true }
+    })
+    const active = children.filter(c => c.status !== 'abandoned')
+    if (active.length === 0) return 'done'
+    if (active.every(c => c.status === 'todo')) return 'todo'
+    if (active.every(c => c.status === 'done')) return 'done'
+    return 'in-progress'
+  }
+
+  // 子任务状态变化后，同步更新父需求单状态（内部使用）
+  private async syncParentRequirementStatus(parentRequirementId: string): Promise<void> {
+    const newStatus = await this.deriveRequirementStatus(parentRequirementId)
+    await prisma.task.update({
+      where: { id: parentRequirementId },
+      data: { status: newStatus, updatedAt: new Date() }
+    })
   }
 
   private async recordHistory(taskId: string, newData: UpdateTaskParams, oldTask: TaskWithRelations, operatorId: string): Promise<void> {

@@ -259,6 +259,13 @@ router.put('/:id', async (req: Request, res: Response) => {
     const task = await taskService.update(id, updateData, req.session.userId)
 
     broadcastAll('task:update', task)
+
+    // 子任务更新后，广播父需求单状态变化
+    if (task.parentRequirementId) {
+      const parent = await taskService.getById(task.parentRequirementId)
+      if (parent) broadcastAll('task:update', parent)
+    }
+
     sendSuccess(res, { task })
   } catch (error) {
     console.error('Failed to update task:', error)
@@ -320,6 +327,13 @@ router.patch('/:id/move', async (req: Request, res: Response) => {
 
     const task = await taskService.move(id, status, req.session.userId)
     broadcastAll('task:update', task)
+
+    // 子任务状态变化后，广播父需求单状态变化
+    if (task.parentRequirementId) {
+      const parent = await taskService.getById(task.parentRequirementId)
+      if (parent) broadcastAll('task:update', parent)
+    }
+
     sendSuccess(res, { task })
   } catch (error) {
     console.error('Failed to move task:', error)
@@ -365,6 +379,13 @@ router.patch('/:id/phases/:phaseId/progress', async (req: Request, res: Response
     )
 
     broadcastAll('task:update', task)
+
+    // 子任务状态变化后，广播父需求单状态变化
+    if (task.parentRequirementId) {
+      const parent = await taskService.getById(task.parentRequirementId)
+      if (parent) broadcastAll('task:update', parent)
+    }
+
     sendSuccess(res, { task })
   } catch (error: any) {
     console.error('Failed to update phase progress:', error)
