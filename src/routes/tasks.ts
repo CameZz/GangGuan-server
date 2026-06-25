@@ -1,4 +1,4 @@
-﻿import { Router, Request, Response } from 'express'
+import { Router, Request, Response } from 'express'
 import { taskService } from '../services/task.service'
 import { sendSuccess, sendError, ErrorCodes } from '../utils/response'
 import { requireAuth } from '../middleware/auth'
@@ -281,14 +281,21 @@ router.delete('/:id', async (req: Request, res: Response) => {
       return
     }
 
+    if (existingTask.itemType !== 'requirement') {
+      sendError(res, ErrorCodes.TASK_DELETE_NOT_ALLOWED, 'Task items cannot be deleted; mark them as abandoned instead', 400)
+      return
+    }
+
     await taskService.delete(id)
 
     broadcastAll('task:delete', { id })
     sendSuccess(res, { message: 'Task deleted' })
   } catch (error: any) {
     console.error('Failed to delete task:', error)
-    if (error.message === '需求单下有子任务，不能删除') {
-      sendError(res, ErrorCodes.TASK_HAS_CHILDREN, error.message, 400)
+    if (error.message === 'Requirement has child tasks') {
+      sendError(res, ErrorCodes.TASK_HAS_CHILDREN, 'Requirement has child tasks', 400)
+    } else if (error.message === 'Task items cannot be deleted') {
+      sendError(res, ErrorCodes.TASK_DELETE_NOT_ALLOWED, 'Task items cannot be deleted; mark them as abandoned instead', 400)
     } else {
       sendError(res, ErrorCodes.INTERNAL_ERROR, 'Failed to delete task', 500)
     }

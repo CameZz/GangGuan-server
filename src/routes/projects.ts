@@ -54,7 +54,7 @@ router.post('/', async (req: Request, res: Response) => {
       return
     }
 
-    const { name, description, nonWorkdays, extraWorkdays, phaseTemplates } = req.body
+    const { name, description, defaultReviewerId, nonWorkdays, extraWorkdays, phaseTemplates } = req.body
     const trimmedName = typeof name === 'string' ? name.trim() : ''
 
     // 参数验证
@@ -62,10 +62,22 @@ router.post('/', async (req: Request, res: Response) => {
       sendError(res, ErrorCodes.VALIDATION_ERROR, '项目名称不能为空')
       return
     }
+    if (!defaultReviewerId) {
+      sendError(res, ErrorCodes.VALIDATION_ERROR, '请选择默认审批人')
+      return
+    }
+
+    // 验证 defaultReviewerId 是否为 PM 或管理员
+    const reviewer = await prisma.user.findUnique({ where: { id: defaultReviewerId } })
+    if (!reviewer || (!reviewer.isAdmin && reviewer.role !== 'pm')) {
+      sendError(res, ErrorCodes.VALIDATION_ERROR, '默认审批人必须是 PM 或管理员')
+      return
+    }
 
     const project = await projectService.create({
       name: trimmedName,
       description: typeof description === 'string' ? description.trim() : '',
+      defaultReviewerId,
       nonWorkdays,
       extraWorkdays,
       phaseTemplates
@@ -101,11 +113,21 @@ router.put('/:id', async (req: Request, res: Response) => {
       return
     }
 
-    const { name, description, nonWorkdays, extraWorkdays } = req.body
+    const { name, description, defaultReviewerId, nonWorkdays, extraWorkdays } = req.body
+
+    // 如果提供了 defaultReviewerId，验证其是否为 PM 或管理员
+    if (defaultReviewerId) {
+      const reviewer = await prisma.user.findUnique({ where: { id: defaultReviewerId } })
+      if (!reviewer || (!reviewer.isAdmin && reviewer.role !== 'pm')) {
+        sendError(res, ErrorCodes.VALIDATION_ERROR, '默认审批人必须是 PM 或管理员')
+        return
+      }
+    }
 
     const project = await projectService.update(id, {
       name,
       description,
+      defaultReviewerId,
       nonWorkdays,
       extraWorkdays
     })

@@ -19,6 +19,7 @@ interface NormalizedPhaseTemplate {
 interface CreateProjectParams {
   name: string
   description?: string
+  defaultReviewerId: string
   nonWorkdays?: unknown
   extraWorkdays?: unknown
   phaseTemplates?: PhaseTemplateInput[]
@@ -28,6 +29,7 @@ interface CreateProjectParams {
 interface UpdateProjectParams {
   name?: string
   description?: string
+  defaultReviewerId?: string
   nonWorkdays?: string[]
   extraWorkdays?: string[]
 }
@@ -113,6 +115,7 @@ export class ProjectService {
       data: {
         name: data.name,
         description: typeof data.description === 'string' ? data.description : '',
+        defaultReviewerId: data.defaultReviewerId,
         nonWorkdays: normalizeStringArray(data.nonWorkdays),
         extraWorkdays: normalizeStringArray(data.extraWorkdays),
         // 客户端可传阶段模板；未传时自动创建默认阶段模板
@@ -139,6 +142,7 @@ export class ProjectService {
       data: {
         name: data.name,
         description: data.description,
+        defaultReviewerId: data.defaultReviewerId,
         nonWorkdays: data.nonWorkdays,
         extraWorkdays: data.extraWorkdays
       },

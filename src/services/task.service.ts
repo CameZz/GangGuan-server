@@ -376,10 +376,12 @@ export class TaskService {
     const task = await this.getById(id)
     if (!task) throw new Error('Task not found')
 
-    if (task.itemType === 'requirement') {
-      const childCount = await prisma.task.count({ where: { parentRequirementId: id } })
-      if (childCount > 0) throw new Error('Requirement has child tasks')
+    if (task.itemType !== 'requirement') {
+      throw new Error('Task items cannot be deleted')
     }
+
+    const childCount = await prisma.task.count({ where: { parentRequirementId: id } })
+    if (childCount > 0) throw new Error('Requirement has child tasks')
 
     await prisma.task.delete({ where: { id } })
   }
@@ -581,9 +583,11 @@ export class TaskService {
   private deriveStatusFromPhases(phases: PhaseLike[], currentStatus: TaskStatus): TaskStatus {
     if (currentStatus === 'abandoned') return 'abandoned'
     if (phases.length === 0) return currentStatus
-    if (phases.every(phase => phase.status === 'done')) return 'done'
-    if (phases.some(phase => phase.status === 'in-progress')) return 'in-progress'
-    return 'todo'
+
+    const progresses = phases.map(phase => Math.max(0, Math.min(100, Math.round(Number(phase.progress ?? 0)))))
+    if (progresses.every(progress => progress === 0)) return 'todo'
+    if (progresses.every(progress => progress === 100)) return 'done'
+    return 'in-progress'
   }
 
   private async recordHistory(taskId: string, newData: UpdateTaskParams, oldTask: TaskWithRelations, operatorId: string): Promise<void> {
