@@ -1,21 +1,14 @@
-﻿import { Router, Request, Response } from 'express'
+import { Router, Request, Response } from 'express'
 import { planningService } from '../services/planning.service'
 import { sendSuccess, sendError, ErrorCodes } from '../utils/response'
 import { requireAuth } from '../middleware/auth'
 import { prisma } from '../utils/prisma'
-import { broadcastAll } from '../ws/broadcast'
+import { broadcastAll, broadcastProject } from '../ws/broadcast'
+import { canManageProject, getPermissionUser } from '../services/project-permission.service'
 
 const router = Router()
 
 router.use(requireAuth)
-
-async function getCurrentUser(userId: string) {
-  return prisma.user.findUnique({ where: { id: userId } })
-}
-
-function canManage(user: { isAdmin: boolean; role: string } | null | undefined): boolean {
-  return !!user && (user.isAdmin || user.role === 'pm')
-}
 
 async function getPlanningForProject(projectId: string, planningId: string) {
   const planning = await planningService.getById(planningId)
@@ -54,13 +47,13 @@ router.get('/:projectId/plannings/:planningId', async (req: Request, res: Respon
 
 router.post('/:projectId/plannings', async (req: Request, res: Response) => {
   try {
-    const currentUser = await getCurrentUser(req.session.userId!)
-    if (!canManage(currentUser)) {
-      sendError(res, ErrorCodes.FORBIDDEN, 'PM or admin permission required', 403)
+    const projectId = req.params.projectId as string
+    const currentUser = await getPermissionUser(req.session.userId!)
+    if (!(await canManageProject(currentUser, projectId))) {
+      sendError(res, ErrorCodes.FORBIDDEN, 'Project management permission required', 403)
       return
     }
 
-    const projectId = req.params.projectId as string
     const projectExists = await prisma.project.count({ where: { id: projectId } })
     if (!projectExists) {
       sendError(res, ErrorCodes.NOT_FOUND, 'Project not found', 404)
@@ -75,7 +68,7 @@ router.post('/:projectId/plannings', async (req: Request, res: Response) => {
     }
 
     const planning = await planningService.create(projectId, { name, color, deadline })
-    broadcastAll('planning:create', planning)
+    broadcastProject('planning:create', planning, projectId)
     sendSuccess(res, { planning }, 201)
   } catch (error) {
     console.error('Failed to create planning:', error)
@@ -85,13 +78,13 @@ router.post('/:projectId/plannings', async (req: Request, res: Response) => {
 
 router.put('/:projectId/plannings/:planningId', async (req: Request, res: Response) => {
   try {
-    const currentUser = await getCurrentUser(req.session.userId!)
-    if (!canManage(currentUser)) {
-      sendError(res, ErrorCodes.FORBIDDEN, 'PM or admin permission required', 403)
+    const projectId = req.params.projectId as string
+    const currentUser = await getPermissionUser(req.session.userId!)
+    if (!(await canManageProject(currentUser, projectId))) {
+      sendError(res, ErrorCodes.FORBIDDEN, 'Project management permission required', 403)
       return
     }
 
-    const projectId = req.params.projectId as string
     const id = req.params.planningId as string
     const existingPlanning = await getPlanningForProject(projectId, id)
     if (!existingPlanning) {
@@ -101,7 +94,7 @@ router.put('/:projectId/plannings/:planningId', async (req: Request, res: Respon
 
     const { name, color, deadline } = req.body
     const planning = await planningService.update(id, { name, color, deadline })
-    broadcastAll('planning:update', planning)
+    broadcastProject('planning:update', planning, projectId)
 
     sendSuccess(res, { planning })
   } catch (error) {
@@ -112,13 +105,13 @@ router.put('/:projectId/plannings/:planningId', async (req: Request, res: Respon
 
 router.delete('/:projectId/plannings/:planningId', async (req: Request, res: Response) => {
   try {
-    const currentUser = await getCurrentUser(req.session.userId!)
-    if (!canManage(currentUser)) {
-      sendError(res, ErrorCodes.FORBIDDEN, 'PM or admin permission required', 403)
+    const projectId = req.params.projectId as string
+    const currentUser = await getPermissionUser(req.session.userId!)
+    if (!(await canManageProject(currentUser, projectId))) {
+      sendError(res, ErrorCodes.FORBIDDEN, 'Project management permission required', 403)
       return
     }
 
-    const projectId = req.params.projectId as string
     const id = req.params.planningId as string
     const existingPlanning = await getPlanningForProject(projectId, id)
     if (!existingPlanning) {
@@ -127,7 +120,7 @@ router.delete('/:projectId/plannings/:planningId', async (req: Request, res: Res
     }
 
     await planningService.delete(id)
-    broadcastAll('planning:delete', { id })
+    broadcastProject('planning:delete', { id }, projectId)
 
     sendSuccess(res, { message: 'Planning deleted' })
   } catch (error) {

@@ -3,19 +3,12 @@ import { taskService } from '../services/task.service'
 import { sendSuccess, sendError, ErrorCodes } from '../utils/response'
 import { requireAuth } from '../middleware/auth'
 import { prisma } from '../utils/prisma'
-import { broadcastAll } from '../ws/broadcast'
+import { broadcastAll, broadcastProject } from '../ws/broadcast'
+import { canManageProject, canOperateProject, getPermissionUser, validateAssigneesInProject } from '../services/project-permission.service'
 
 const router = Router()
 
 router.use(requireAuth)
-
-async function getCurrentUser(userId: string) {
-  return prisma.user.findUnique({ where: { id: userId } })
-}
-
-function canManage(user: { isAdmin: boolean; role: string } | null | undefined): boolean {
-  return !!user && (user.isAdmin || user.role === 'pm')
-}
 
 async function planningBelongsToProject(projectId: string, planningId?: string | null): Promise<boolean> {
   if (!planningId) return true
@@ -27,6 +20,11 @@ async function parentRequirementBelongsToProject(projectId: string, parentRequir
   if (!parentRequirementId) return true
   const requirement = await prisma.task.findUnique({ where: { id: parentRequirementId } })
   return !!requirement && requirement.projectId === projectId && requirement.itemType === 'requirement'
+}
+
+function collectPhaseAssigneeIds(phases: any[] | undefined): Array<string | null | undefined> {
+  if (!Array.isArray(phases)) return []
+  return phases.map(phase => phase?.assigneeId)
 }
 
 function preserveExistingReferences(existingTask: any, incoming: any[] | undefined, operatorId: string) {
@@ -102,12 +100,6 @@ router.get('/:id', async (req: Request, res: Response) => {
 
 router.post('/', async (req: Request, res: Response) => {
   try {
-    const currentUser = await getCurrentUser(req.session.userId!)
-    if (!canManage(currentUser)) {
-      sendError(res, ErrorCodes.FORBIDDEN, 'PM or admin permission required', 403)
-      return
-    }
-
     const {
       projectId,
       planningId,
@@ -128,6 +120,12 @@ router.post('/', async (req: Request, res: Response) => {
       return
     }
 
+    const currentUser = await getPermissionUser(req.session.userId!)
+    if (!(await canManageProject(currentUser, projectId))) {
+      sendError(res, ErrorCodes.FORBIDDEN, 'Project management permission required', 403)
+      return
+    }
+
     if (!(await planningBelongsToProject(projectId, planningId))) {
       sendError(res, ErrorCodes.VALIDATION_ERROR, 'Planning does not belong to the project', 400)
       return
@@ -135,6 +133,11 @@ router.post('/', async (req: Request, res: Response) => {
 
     if (!(await parentRequirementBelongsToProject(projectId, parentRequirementId))) {
       sendError(res, ErrorCodes.VALIDATION_ERROR, 'Parent requirement does not belong to the project', 400)
+      return
+    }
+
+    if (!(await validateAssigneesInProject(projectId, [assigneeId, ...collectPhaseAssigneeIds(phases)]))) {
+      sendError(res, ErrorCodes.VALIDATION_ERROR, 'Assignees must be members of the project', 400)
       return
     }
 
@@ -153,7 +156,7 @@ router.post('/', async (req: Request, res: Response) => {
       comments
     }, req.session.userId)
 
-    broadcastAll('task:create', task)
+    broadcastProject('task:create', task, task.projectId)
     sendSuccess(res, { task }, 201)
   } catch (error) {
     console.error('Failed to create task:', error)
@@ -170,8 +173,9 @@ router.put('/:id', async (req: Request, res: Response) => {
       return
     }
 
-    const currentUser = await getCurrentUser(req.session.userId!)
-    const isPmOrAdmin = canManage(currentUser)
+    const currentUser = await getPermissionUser(req.session.userId!)
+    const isProjectManager = await canManageProject(currentUser, existingTask.projectId)
+    const canOperate = await canOperateProject(currentUser, existingTask.projectId)
 
     const {
       title,
@@ -191,7 +195,7 @@ router.put('/:id', async (req: Request, res: Response) => {
 
     let updateData: any
 
-    if (isPmOrAdmin) {
+    if (isProjectManager) {
       if (!(await planningBelongsToProject(existingTask.projectId, planningId))) {
         sendError(res, ErrorCodes.VALIDATION_ERROR, 'Planning does not belong to the project', 400)
         return
@@ -199,6 +203,11 @@ router.put('/:id', async (req: Request, res: Response) => {
 
       if (!(await parentRequirementBelongsToProject(existingTask.projectId, parentRequirementId))) {
         sendError(res, ErrorCodes.VALIDATION_ERROR, 'Parent requirement does not belong to the project', 400)
+        return
+      }
+
+      if (!(await validateAssigneesInProject(existingTask.projectId, [assigneeId, ...collectPhaseAssigneeIds(phases)]))) {
+        sendError(res, ErrorCodes.VALIDATION_ERROR, 'Assignees must be members of the project', 400)
         return
       }
 
@@ -218,6 +227,11 @@ router.put('/:id', async (req: Request, res: Response) => {
         comments
       }
     } else {
+      if (!canOperate) {
+        sendError(res, ErrorCodes.FORBIDDEN, 'Project membership required', 403)
+        return
+      }
+
       const hasRestrictedFields = [
         title,
         description,
@@ -233,7 +247,7 @@ router.put('/:id', async (req: Request, res: Response) => {
       ].some(value => value !== undefined)
 
       if (hasRestrictedFields) {
-        sendError(res, ErrorCodes.FORBIDDEN, 'PM or admin permission required', 403)
+        sendError(res, ErrorCodes.FORBIDDEN, 'Project management permission required', 403)
         return
       }
 
@@ -258,12 +272,11 @@ router.put('/:id', async (req: Request, res: Response) => {
 
     const task = await taskService.update(id, updateData, req.session.userId)
 
-    broadcastAll('task:update', task)
+    broadcastProject('task:update', task, task.projectId)
 
-    // 子任务更新后，广播父需求单状态变化
     if (task.parentRequirementId) {
       const parent = await taskService.getById(task.parentRequirementId)
-      if (parent) broadcastAll('task:update', parent)
+      if (parent) broadcastProject('task:update', parent, parent.projectId)
     }
 
     sendSuccess(res, { task })
@@ -276,15 +289,15 @@ router.put('/:id', async (req: Request, res: Response) => {
 router.delete('/:id', async (req: Request, res: Response) => {
   try {
     const id = req.params.id as string
-    const currentUser = await getCurrentUser(req.session.userId!)
-    if (!canManage(currentUser)) {
-      sendError(res, ErrorCodes.FORBIDDEN, 'PM or admin permission required', 403)
-      return
-    }
-
     const existingTask = await taskService.getById(id)
     if (!existingTask) {
       sendError(res, ErrorCodes.NOT_FOUND, 'Task not found', 404)
+      return
+    }
+
+    const currentUser = await getPermissionUser(req.session.userId!)
+    if (!(await canManageProject(currentUser, existingTask.projectId))) {
+      sendError(res, ErrorCodes.FORBIDDEN, 'Project management permission required', 403)
       return
     }
 
@@ -293,9 +306,10 @@ router.delete('/:id', async (req: Request, res: Response) => {
       return
     }
 
+    const projectId = existingTask.projectId
     await taskService.delete(id)
 
-    broadcastAll('task:delete', { id })
+    broadcastProject('task:delete', { id }, projectId)
     sendSuccess(res, { message: 'Task deleted' })
   } catch (error: any) {
     console.error('Failed to delete task:', error)
@@ -312,9 +326,15 @@ router.delete('/:id', async (req: Request, res: Response) => {
 router.patch('/:id/move', async (req: Request, res: Response) => {
   try {
     const id = req.params.id as string
-    const currentUser = await getCurrentUser(req.session.userId!)
-    if (!canManage(currentUser)) {
-      sendError(res, ErrorCodes.FORBIDDEN, 'PM or admin permission required', 403)
+    const existingTask = await taskService.getById(id)
+    if (!existingTask) {
+      sendError(res, ErrorCodes.NOT_FOUND, 'Task not found', 404)
+      return
+    }
+
+    const currentUser = await getPermissionUser(req.session.userId!)
+    if (!(await canManageProject(currentUser, existingTask.projectId))) {
+      sendError(res, ErrorCodes.FORBIDDEN, 'Project management permission required', 403)
       return
     }
 
@@ -326,12 +346,11 @@ router.patch('/:id/move', async (req: Request, res: Response) => {
     }
 
     const task = await taskService.move(id, status, req.session.userId)
-    broadcastAll('task:update', task)
+    broadcastProject('task:update', task, task.projectId)
 
-    // 子任务状态变化后，广播父需求单状态变化
     if (task.parentRequirementId) {
       const parent = await taskService.getById(task.parentRequirementId)
-      if (parent) broadcastAll('task:update', parent)
+      if (parent) broadcastProject('task:update', parent, parent.projectId)
     }
 
     sendSuccess(res, { task })
@@ -365,8 +384,13 @@ router.patch('/:id/phases/:phaseId/progress', async (req: Request, res: Response
       return
     }
 
-    const currentUser = await getCurrentUser(req.session.userId!)
-    if (!canManage(currentUser) && phase.assigneeId !== req.session.userId) {
+    const currentUser = await getPermissionUser(req.session.userId!)
+    if (!(await canOperateProject(currentUser, taskBeforeUpdate.projectId))) {
+      sendError(res, ErrorCodes.FORBIDDEN, 'Project membership required', 403)
+      return
+    }
+
+    if (!(await canManageProject(currentUser, taskBeforeUpdate.projectId)) && phase.assigneeId !== req.session.userId) {
       sendError(res, ErrorCodes.FORBIDDEN, 'Can only update your assigned phase', 403)
       return
     }
@@ -378,22 +402,17 @@ router.patch('/:id/phases/:phaseId/progress', async (req: Request, res: Response
       req.session.userId!
     )
 
-    broadcastAll('task:update', task)
+    broadcastProject('task:update', task, task.projectId)
 
-    // 子任务状态变化后，广播父需求单状态变化
     if (task.parentRequirementId) {
       const parent = await taskService.getById(task.parentRequirementId)
-      if (parent) broadcastAll('task:update', parent)
+      if (parent) broadcastProject('task:update', parent, parent.projectId)
     }
 
     sendSuccess(res, { task })
   } catch (error: any) {
     console.error('Failed to update phase progress:', error)
-    if (error.message === '任务不存在' || error.message === '阶段不存在') {
-      sendError(res, ErrorCodes.NOT_FOUND, error.message, 404)
-    } else {
-      sendError(res, ErrorCodes.INTERNAL_ERROR, 'Failed to update phase progress', 500)
-    }
+    sendError(res, ErrorCodes.INTERNAL_ERROR, 'Failed to update phase progress', 500)
   }
 })
 

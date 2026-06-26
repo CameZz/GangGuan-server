@@ -1,6 +1,4 @@
-// 项目服务
-
-import { Project, ProjectPhaseTemplate } from '@prisma/client'
+import { Prisma, Project, ProjectPhaseTemplate } from '@prisma/client'
 import { prisma } from '../utils/prisma'
 
 interface PhaseTemplateInput {
@@ -15,7 +13,6 @@ interface NormalizedPhaseTemplate {
   enabled: boolean
 }
 
-// 创建项目参数
 interface CreateProjectParams {
   name: string
   description?: string
@@ -25,7 +22,6 @@ interface CreateProjectParams {
   phaseTemplates?: PhaseTemplateInput[]
 }
 
-// 更新项目参数
 interface UpdateProjectParams {
   name?: string
   description?: string
@@ -34,7 +30,32 @@ interface UpdateProjectParams {
   extraWorkdays?: string[]
 }
 
-// 默认阶段模板
+export const projectMemberUserSelect = {
+  id: true,
+  employeeId: true,
+  name: true,
+  phone: true,
+  email: true,
+  avatar: true,
+  role: true,
+  isAdmin: true
+} satisfies Prisma.UserSelect
+
+const projectInclude = {
+  phaseTemplates: {
+    orderBy: { order: 'asc' as const }
+  },
+  members: {
+    include: {
+      user: { select: projectMemberUserSelect }
+    },
+    orderBy: { createdAt: 'asc' as const }
+  }
+}
+
+export type ProjectWithRelations = Prisma.ProjectGetPayload<{ include: typeof projectInclude }>
+export type ProjectMemberUser = Prisma.UserGetPayload<{ select: typeof projectMemberUserSelect }>
+
 const DEFAULT_PHASE_TEMPLATES = [
   { name: '立案', order: 0 },
   { name: '设计', order: 1 },
@@ -51,6 +72,11 @@ function normalizeStringArray(value: unknown): string[] {
     .filter((item): item is string => typeof item === 'string')
     .map(item => item.trim())
     .filter(Boolean)
+}
+
+function uniqueStrings(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return [...new Set(value.filter((item): item is string => typeof item === 'string' && item.trim() !== '').map(item => item.trim()))]
 }
 
 function normalizePhaseTemplates(templates?: PhaseTemplateInput[]): NormalizedPhaseTemplate[] {
@@ -83,32 +109,21 @@ function normalizePhaseTemplates(templates?: PhaseTemplateInput[]): NormalizedPh
 }
 
 export class ProjectService {
-  // 获取所有项目
-  async getAll(): Promise<(Project & { phaseTemplates: ProjectPhaseTemplate[] })[]> {
+  async getAll(): Promise<ProjectWithRelations[]> {
     return prisma.project.findMany({
-      include: {
-        phaseTemplates: {
-          orderBy: { order: 'asc' }
-        }
-      },
+      include: projectInclude,
       orderBy: { createdAt: 'desc' }
     })
   }
 
-  // 根据 ID 获取项目
-  async getById(id: string): Promise<(Project & { phaseTemplates: ProjectPhaseTemplate[] }) | null> {
+  async getById(id: string): Promise<ProjectWithRelations | null> {
     return prisma.project.findUnique({
       where: { id },
-      include: {
-        phaseTemplates: {
-          orderBy: { order: 'asc' }
-        }
-      }
+      include: projectInclude
     })
   }
 
-  // 创建项目
-  async create(data: CreateProjectParams): Promise<Project & { phaseTemplates: ProjectPhaseTemplate[] }> {
+  async create(data: CreateProjectParams): Promise<ProjectWithRelations> {
     const phaseTemplates = normalizePhaseTemplates(data.phaseTemplates)
 
     return prisma.project.create({
@@ -118,7 +133,9 @@ export class ProjectService {
         defaultReviewerId: data.defaultReviewerId,
         nonWorkdays: normalizeStringArray(data.nonWorkdays),
         extraWorkdays: normalizeStringArray(data.extraWorkdays),
-        // 客户端可传阶段模板；未传时自动创建默认阶段模板
+        members: {
+          create: [{ userId: data.defaultReviewerId }]
+        },
         phaseTemplates: {
           create: phaseTemplates.map(template => ({
             name: template.name,
@@ -127,16 +144,11 @@ export class ProjectService {
           }))
         }
       },
-      include: {
-        phaseTemplates: {
-          orderBy: { order: 'asc' }
-        }
-      }
+      include: projectInclude
     })
   }
 
-  // 更新项目
-  async update(id: string, data: UpdateProjectParams): Promise<Project & { phaseTemplates: ProjectPhaseTemplate[] }> {
+  async update(id: string, data: UpdateProjectParams): Promise<ProjectWithRelations> {
     return prisma.project.update({
       where: { id },
       data: {
@@ -146,50 +158,137 @@ export class ProjectService {
         nonWorkdays: data.nonWorkdays,
         extraWorkdays: data.extraWorkdays
       },
-      include: {
-        phaseTemplates: {
-          orderBy: { order: 'asc' }
-        }
-      }
+      include: projectInclude
     })
   }
 
-  // 删除项目（级联删除关联数据）
   async delete(id: string): Promise<void> {
-    await prisma.project.delete({
-      where: { id }
-    })
+    await prisma.project.delete({ where: { id } })
   }
 
-  // 验证项目是否存在
   async exists(id: string): Promise<boolean> {
-    const count = await prisma.project.count({
-      where: { id }
-    })
+    const count = await prisma.project.count({ where: { id } })
     return count > 0
   }
 
-  // 获取项目成员 ID 列表（用于 WebSocket 广播）
-  async getProjectMemberIds(projectId: string): Promise<string[]> {
-    const tasks = await prisma.task.findMany({
+  async getMembers(projectId: string): Promise<ProjectMemberUser[]> {
+    const memberships = await prisma.projectMember.findMany({
       where: { projectId },
-      select: {
-        assigneeId: true,
-        phases: {
-          select: { assigneeId: true }
-        }
+      include: { user: { select: projectMemberUserSelect } },
+      orderBy: { createdAt: 'asc' }
+    })
+    return memberships.map(item => item.user)
+  }
+
+  async getReviewerCandidates(projectId: string): Promise<ProjectMemberUser[]> {
+    const [projectMembers, admins] = await Promise.all([
+      prisma.projectMember.findMany({
+        where: {
+          projectId,
+          user: {
+            OR: [{ role: 'pm' }, { isAdmin: true }]
+          }
+        },
+        include: { user: { select: projectMemberUserSelect } },
+        orderBy: { createdAt: 'asc' }
+      }),
+      prisma.user.findMany({
+        where: { isAdmin: true },
+        select: projectMemberUserSelect,
+        orderBy: { name: 'asc' }
+      })
+    ])
+
+    const byId = new Map<string, ProjectMemberUser>()
+    projectMembers.forEach(member => byId.set(member.user.id, member.user))
+    admins.forEach(admin => byId.set(admin.id, admin))
+    return [...byId.values()]
+  }
+
+  async replaceMembers(projectId: string, userIdsInput: unknown): Promise<ProjectMemberUser[]> {
+    const userIds = uniqueStrings(userIdsInput)
+    const project = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true } })
+    if (!project) throw new Error('Project not found')
+
+    const validUsers = await prisma.user.findMany({
+      where: { id: { in: userIds } },
+      select: { id: true }
+    })
+    const validUserIds = validUsers.map(user => user.id)
+
+    const existing = await prisma.projectMember.findMany({
+      where: { projectId },
+      select: { userId: true }
+    })
+    const nextSet = new Set(validUserIds)
+    const removing = existing.map(item => item.userId).filter(userId => !nextSet.has(userId))
+
+    if (removing.length > 0) {
+      const blocked = await this.findUsersWithActiveAssignments(projectId, removing)
+      if (blocked.length > 0) {
+        throw new Error(`Members still have active assignments: ${blocked.join(',')}`)
+      }
+    }
+
+    await prisma.$transaction(async tx => {
+      if (removing.length > 0) {
+        await tx.projectMember.deleteMany({
+          where: { projectId, userId: { in: removing } }
+        })
+      }
+
+      if (validUserIds.length > 0) {
+        await tx.projectMember.createMany({
+          data: validUserIds.map(userId => ({ projectId, userId })),
+          skipDuplicates: true
+        })
       }
     })
 
-    const memberIds = new Set<string>()
-    tasks.forEach(task => {
-      if (task.assigneeId) memberIds.add(task.assigneeId)
-      task.phases.forEach(phase => {
-        if (phase.assigneeId) memberIds.add(phase.assigneeId)
-      })
+    return this.getMembers(projectId)
+  }
+
+  async isProjectMember(projectId: string, userId: string): Promise<boolean> {
+    const count = await prisma.projectMember.count({ where: { projectId, userId } })
+    return count > 0
+  }
+
+  async isProjectMemberOrAdmin(projectId: string, user: { id: string; isAdmin: boolean }): Promise<boolean> {
+    if (user.isAdmin) return true
+    return this.isProjectMember(projectId, user.id)
+  }
+
+  async getProjectMemberIds(projectId: string): Promise<string[]> {
+    const members = await prisma.projectMember.findMany({
+      where: { projectId },
+      select: { userId: true }
+    })
+    return members.map(member => member.userId)
+  }
+
+  private async findUsersWithActiveAssignments(projectId: string, userIds: string[]): Promise<string[]> {
+    const activeTasks = await prisma.task.findMany({
+      where: {
+        projectId,
+        assigneeId: { in: userIds },
+        status: { notIn: ['done', 'abandoned'] }
+      },
+      select: { assigneeId: true }
     })
 
-    return Array.from(memberIds)
+    const activePhases = await prisma.taskPhase.findMany({
+      where: {
+        assigneeId: { in: userIds },
+        status: { not: 'done' },
+        task: { projectId, status: { not: 'abandoned' } }
+      },
+      select: { assigneeId: true }
+    })
+
+    return [...new Set([
+      ...activeTasks.map(task => task.assigneeId).filter((id): id is string => !!id),
+      ...activePhases.map(phase => phase.assigneeId).filter((id): id is string => !!id)
+    ])]
   }
 }
 

@@ -1,8 +1,9 @@
-﻿import { Router, Request, Response } from 'express'
+import { Router, Request, Response } from 'express'
 import { sendSuccess, sendError, ErrorCodes } from '../utils/response'
 import { requireAuth } from '../middleware/auth'
 import { prisma } from '../utils/prisma'
 import { notificationService } from '../services/notification.service'
+import { canBeReviewerInProject, canOperateProject, canReviewInProject, getPermissionUser, validateAssigneesInProject } from '../services/project-permission.service'
 
 const router = Router()
 
@@ -13,6 +14,11 @@ function getQueryString(value: unknown): string | undefined {
     return typeof firstValue === 'string' ? firstValue : undefined
   }
   return undefined
+}
+
+function collectPhaseSnapshotAssignees(phaseSnapshot: unknown): Array<string | null | undefined> {
+  if (!Array.isArray(phaseSnapshot)) return []
+  return phaseSnapshot.map((phase: any) => phase?.assigneeId)
 }
 
 router.use(requireAuth)
@@ -48,14 +54,9 @@ router.post('/', async (req: Request, res: Response) => {
       return
     }
 
-    // 校验 assignedReviewerId 是否为 PM 或管理员
-    const reviewer = await prisma.user.findUnique({ where: { id: assignedReviewerId } })
-    if (!reviewer) {
-      sendError(res, ErrorCodes.NOT_FOUND, 'Reviewer not found', 404)
-      return
-    }
-    if (!reviewer.isAdmin && reviewer.role !== 'pm') {
-      sendError(res, ErrorCodes.VALIDATION_ERROR, 'Reviewer must be PM or admin', 400)
+    const currentUser = await getPermissionUser(requesterId)
+    if (!(await canOperateProject(currentUser, projectId))) {
+      sendError(res, ErrorCodes.FORBIDDEN, 'Project membership required', 403)
       return
     }
 
@@ -84,6 +85,16 @@ router.post('/', async (req: Request, res: Response) => {
       }
     }
 
+    if (!(await canBeReviewerInProject(projectId, assignedReviewerId))) {
+      sendError(res, ErrorCodes.VALIDATION_ERROR, 'Reviewer must be authorized for this project', 400)
+      return
+    }
+
+    if (!(await validateAssigneesInProject(projectId, collectPhaseSnapshotAssignees(phaseSnapshot)))) {
+      sendError(res, ErrorCodes.VALIDATION_ERROR, 'Phase assignees must be members of the project', 400)
+      return
+    }
+
     const approval = await prisma.taskApprovalRequest.create({
       data: {
         title: title.trim(),
@@ -103,7 +114,6 @@ router.post('/', async (req: Request, res: Response) => {
       }
     })
 
-    // 仅通知指定审批人
     if (assignedReviewerId !== requesterId) {
       await notificationService.create({
         recipientId: assignedReviewerId,
@@ -132,19 +142,13 @@ router.get('/', async (req: Request, res: Response) => {
     const where: any = {}
 
     if (isPM) {
-      // PM/Admin 只看到指派给自己的申请
       where.assignedReviewerId = userId
     } else {
-      // 普通用户只看到自己的申请
       where.requesterId = userId
     }
 
-    if (status && status !== 'all') {
-      where.status = status
-    }
-    if (projectId && projectId !== 'all') {
-      where.projectId = projectId
-    }
+    if (status && status !== 'all') where.status = status
+    if (projectId && projectId !== 'all') where.projectId = projectId
 
     const approvals = await prisma.taskApprovalRequest.findMany({
       where,
@@ -186,7 +190,6 @@ router.get('/:id', async (req: Request, res: Response) => {
       return
     }
 
-    // 申请者或指定审批人可查看
     if (approval.requesterId !== userId && approval.assignedReviewerId !== userId) {
       sendError(res, ErrorCodes.FORBIDDEN, 'No permission to view approval', 403)
       return
@@ -206,9 +209,7 @@ router.post('/:id/approve', async (req: Request, res: Response) => {
 
     const approval = await prisma.taskApprovalRequest.findUnique({
       where: { id },
-      include: {
-        requester: { select: { id: true, name: true } }
-      }
+      include: { requester: { select: { id: true, name: true } } }
     })
 
     if (!approval) {
@@ -216,9 +217,9 @@ router.post('/:id/approve', async (req: Request, res: Response) => {
       return
     }
 
-    // 仅指定审批人可审批
-    if (approval.assignedReviewerId !== userId) {
-      sendError(res, ErrorCodes.FORBIDDEN, 'Only the assigned reviewer can approve this request', 403)
+    const currentUser = await getPermissionUser(userId)
+    if (approval.assignedReviewerId !== userId || !(await canReviewInProject(currentUser, approval.projectId))) {
+      sendError(res, ErrorCodes.FORBIDDEN, 'Only the assigned project reviewer can approve this request', 403)
       return
     }
 
@@ -229,11 +230,7 @@ router.post('/:id/approve', async (req: Request, res: Response) => {
 
     const updated = await prisma.taskApprovalRequest.update({
       where: { id },
-      data: {
-        status: 'approved',
-        reviewerId: userId,
-        reviewedAt: new Date()
-      },
+      data: { status: 'approved', reviewerId: userId, reviewedAt: new Date() },
       include: {
         requester: { select: { id: true, name: true, avatar: true, role: true } },
         assignedReviewer: { select: { id: true, name: true, avatar: true, role: true } },
@@ -272,9 +269,7 @@ router.post('/:id/reject', async (req: Request, res: Response) => {
 
     const approval = await prisma.taskApprovalRequest.findUnique({
       where: { id },
-      include: {
-        requester: { select: { id: true, name: true } }
-      }
+      include: { requester: { select: { id: true, name: true } } }
     })
 
     if (!approval) {
@@ -282,9 +277,9 @@ router.post('/:id/reject', async (req: Request, res: Response) => {
       return
     }
 
-    // 仅指定审批人可审批
-    if (approval.assignedReviewerId !== userId) {
-      sendError(res, ErrorCodes.FORBIDDEN, 'Only the assigned reviewer can reject this request', 403)
+    const currentUser = await getPermissionUser(userId)
+    if (approval.assignedReviewerId !== userId || !(await canReviewInProject(currentUser, approval.projectId))) {
+      sendError(res, ErrorCodes.FORBIDDEN, 'Only the assigned project reviewer can reject this request', 403)
       return
     }
 
@@ -295,12 +290,7 @@ router.post('/:id/reject', async (req: Request, res: Response) => {
 
     const updated = await prisma.taskApprovalRequest.update({
       where: { id },
-      data: {
-        status: 'rejected',
-        reviewerId: userId,
-        reviewComment: reviewComment.trim(),
-        reviewedAt: new Date()
-      },
+      data: { status: 'rejected', reviewerId: userId, reviewComment: reviewComment.trim(), reviewedAt: new Date() },
       include: {
         requester: { select: { id: true, name: true, avatar: true, role: true } },
         assignedReviewer: { select: { id: true, name: true, avatar: true, role: true } },
@@ -326,7 +316,6 @@ router.post('/:id/reject', async (req: Request, res: Response) => {
   }
 })
 
-// 取消申请（仅申请者可操作，仅 pending 可取消）
 router.post('/:id/cancel', async (req: Request, res: Response) => {
   try {
     const userId = req.session.userId!
@@ -345,13 +334,11 @@ router.post('/:id/cancel', async (req: Request, res: Response) => {
       return
     }
 
-    // 仅申请者可取消
     if (approval.requesterId !== userId) {
       sendError(res, ErrorCodes.FORBIDDEN, 'Only the requester can cancel this request', 403)
       return
     }
 
-    // 仅 pending 可取消
     if (approval.status !== 'pending') {
       sendError(res, ErrorCodes.VALIDATION_ERROR, 'Only pending requests can be cancelled', 400)
       return
@@ -359,9 +346,7 @@ router.post('/:id/cancel', async (req: Request, res: Response) => {
 
     const updated = await prisma.taskApprovalRequest.update({
       where: { id },
-      data: {
-        status: 'cancelled'
-      },
+      data: { status: 'cancelled' },
       include: {
         requester: { select: { id: true, name: true, avatar: true, role: true } },
         assignedReviewer: { select: { id: true, name: true, avatar: true, role: true } },
@@ -371,7 +356,6 @@ router.post('/:id/cancel', async (req: Request, res: Response) => {
       }
     })
 
-    // 通知指定审批人
     if (approval.assignedReviewerId && approval.assignedReviewerId !== userId) {
       await notificationService.create({
         recipientId: approval.assignedReviewerId,

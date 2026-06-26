@@ -5,6 +5,7 @@ import { connectionManager } from './connection'
 import { prisma } from '../utils/prisma'
 import { sessionStore } from '../middleware/session'
 import { taskService } from '../services/task.service'
+import { projectMemberUserSelect } from '../services/project.service'
 
 function parseSessionId(cookieHeader: string | undefined): string | null {
   if (!cookieHeader) return null
@@ -75,7 +76,11 @@ export function initWebSocket(httpServer: HttpServer): void {
 
           const projects = await prisma.project.findMany({
             include: {
-              phaseTemplates: { orderBy: { order: 'asc' } }
+              phaseTemplates: { orderBy: { order: 'asc' } },
+              members: {
+                include: { user: { select: projectMemberUserSelect } },
+                orderBy: { createdAt: 'asc' as const }
+              }
             }
           })
 
