@@ -1,7 +1,7 @@
-﻿import { Router, Request, Response } from 'express'
+import { Router, Request, Response } from 'express'
 import { authService } from '../services/auth.service'
 import { sendSuccess, sendError, ErrorCodes } from '../utils/response'
-import { requireAuth } from '../middleware/auth'
+import { requireAuth, requireBearerAuth, requireSessionAuth } from '../middleware/auth'
 
 const router = Router()
 
@@ -21,6 +21,9 @@ router.post('/login', async (req: Request, res: Response) => {
       return
     }
 
+    // 生成 JWT token
+    const token = authService.generateToken(user)
+
     req.session.regenerate((error) => {
       if (error) {
         console.error('Failed to regenerate session:', error)
@@ -29,7 +32,7 @@ router.post('/login', async (req: Request, res: Response) => {
       }
 
       req.session.userId = user.id
-      sendSuccess(res, { user })
+      sendSuccess(res, { user, token })
     })
   } catch (error) {
     console.error('Login failed:', error)
@@ -49,9 +52,10 @@ router.post('/logout', (req: Request, res: Response) => {
   })
 })
 
-router.get('/me', requireAuth, async (req: Request, res: Response) => {
+router.get('/me', requireSessionAuth, async (req: Request, res: Response) => {
   try {
-    const user = await authService.getUserById(req.session.userId!)
+    const userId = req.userId!
+    const user = await authService.getUserById(userId)
 
     if (!user) {
       sendError(res, ErrorCodes.NOT_FOUND, 'User not found', 404)
@@ -62,6 +66,23 @@ router.get('/me', requireAuth, async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Failed to get current user:', error)
     sendError(res, ErrorCodes.INTERNAL_ERROR, 'Failed to get current user', 500)
+  }
+})
+
+router.get('/validate-token', requireBearerAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!
+    const user = await authService.getUserById(userId)
+
+    if (!user) {
+      sendError(res, ErrorCodes.NOT_FOUND, 'User not found', 404)
+      return
+    }
+
+    sendSuccess(res, { user })
+  } catch (error) {
+    console.error('Failed to validate token:', error)
+    sendError(res, ErrorCodes.INTERNAL_ERROR, 'Failed to validate token', 500)
   }
 })
 
@@ -79,7 +100,8 @@ router.put('/password', requireAuth, async (req: Request, res: Response) => {
       return
     }
 
-    const success = await authService.changePassword(req.session.userId!, oldPassword, newPassword)
+    const userId = req.userId!
+    const success = await authService.changePassword(userId, oldPassword, newPassword)
     if (!success) {
       sendError(res, ErrorCodes.INVALID_CREDENTIALS, 'Old password is incorrect', 401)
       return
