@@ -5,6 +5,8 @@ import { requireAuth } from '../middleware/auth'
 import { prisma } from '../utils/prisma'
 import { broadcastAll, broadcastProject } from '../ws/broadcast'
 import { canManageProject, canOperateProject, getPermissionUser, validateAssigneesInProject } from '../services/project-permission.service'
+import { generateId } from '../utils/id'
+import { notificationService } from '../services/notification.service'
 
 const router = Router()
 
@@ -413,6 +415,286 @@ router.patch('/:id/phases/:phaseId/progress', async (req: Request, res: Response
   } catch (error: any) {
     console.error('Failed to update phase progress:', error)
     sendError(res, ErrorCodes.INTERNAL_ERROR, 'Failed to update phase progress', 500)
+  }
+})
+
+// ── 评论路由 ──
+
+router.post('/:id/comments', async (req: Request, res: Response) => {
+  try {
+    const taskId = req.params.id as string
+    const existingTask = await taskService.getById(taskId)
+    if (!existingTask) {
+      sendError(res, ErrorCodes.NOT_FOUND, 'Task not found', 404)
+      return
+    }
+
+    const currentUser = await getPermissionUser(req.session.userId!)
+    if (!(await canOperateProject(currentUser, existingTask.projectId))) {
+      sendError(res, ErrorCodes.FORBIDDEN, 'Project membership required', 403)
+      return
+    }
+
+    const { content } = req.body
+    if (!content || !content.trim()) {
+      sendError(res, ErrorCodes.VALIDATION_ERROR, 'content is required')
+      return
+    }
+
+    const commentId = generateId()
+    await prisma.comment.create({
+      data: {
+        id: commentId,
+        content: content.trim(),
+        authorId: req.session.userId!,
+        taskId
+      }
+    })
+
+    const task = await taskService.getById(taskId)
+    if (!task) {
+      sendError(res, ErrorCodes.NOT_FOUND, 'Task not found', 404)
+      return
+    }
+    broadcastProject('task:update', task, task.projectId)
+    await notificationService.notifyComment(taskId, { authorId: req.session.userId!, content: content.trim() }, req.session.userId!)
+
+    sendSuccess(res, { task })
+  } catch (error) {
+    console.error('Failed to add comment:', error)
+    sendError(res, ErrorCodes.INTERNAL_ERROR, 'Failed to add comment', 500)
+  }
+})
+
+router.put('/:id/comments/:commentId', async (req: Request, res: Response) => {
+  try {
+    const taskId = req.params.id as string
+    const commentId = req.params.commentId as string
+    const existingTask = await taskService.getById(taskId)
+    if (!existingTask) {
+      sendError(res, ErrorCodes.NOT_FOUND, 'Task not found', 404)
+      return
+    }
+
+    const currentUser = await getPermissionUser(req.session.userId!)
+    const isProjectManager = await canManageProject(currentUser, existingTask.projectId)
+    const canOperate = await canOperateProject(currentUser, existingTask.projectId)
+
+    if (!canOperate) {
+      sendError(res, ErrorCodes.FORBIDDEN, 'Project membership required', 403)
+      return
+    }
+
+    const existingComment = existingTask.comments.find((c: any) => c.id === commentId)
+    if (!existingComment) {
+      sendError(res, ErrorCodes.NOT_FOUND, 'Comment not found', 404)
+      return
+    }
+
+    if (!isProjectManager && existingComment.authorId !== req.session.userId) {
+      sendError(res, ErrorCodes.FORBIDDEN, 'Can only edit your own comments', 403)
+      return
+    }
+
+    const { content } = req.body
+    if (!content || !content.trim()) {
+      sendError(res, ErrorCodes.VALIDATION_ERROR, 'content is required')
+      return
+    }
+
+    await prisma.comment.update({
+      where: { id: commentId },
+      data: { content: content.trim() }
+    })
+
+    const task = await taskService.getById(taskId)
+    if (!task) {
+      sendError(res, ErrorCodes.NOT_FOUND, 'Task not found', 404)
+      return
+    }
+    broadcastProject('task:update', task, task.projectId)
+
+    sendSuccess(res, { task })
+  } catch (error) {
+    console.error('Failed to update comment:', error)
+    sendError(res, ErrorCodes.INTERNAL_ERROR, 'Failed to update comment', 500)
+  }
+})
+
+router.delete('/:id/comments/:commentId', async (req: Request, res: Response) => {
+  try {
+    const taskId = req.params.id as string
+    const commentId = req.params.commentId as string
+    const existingTask = await taskService.getById(taskId)
+    if (!existingTask) {
+      sendError(res, ErrorCodes.NOT_FOUND, 'Task not found', 404)
+      return
+    }
+
+    const currentUser = await getPermissionUser(req.session.userId!)
+    if (!(await canManageProject(currentUser, existingTask.projectId))) {
+      sendError(res, ErrorCodes.FORBIDDEN, 'Project management permission required', 403)
+      return
+    }
+
+    const existingComment = existingTask.comments.find((c: any) => c.id === commentId)
+    if (!existingComment) {
+      sendError(res, ErrorCodes.NOT_FOUND, 'Comment not found', 404)
+      return
+    }
+
+    await prisma.comment.delete({ where: { id: commentId } })
+
+    const task = await taskService.getById(taskId)
+    if (!task) {
+      sendError(res, ErrorCodes.NOT_FOUND, 'Task not found', 404)
+      return
+    }
+    broadcastProject('task:update', task, task.projectId)
+
+    sendSuccess(res, { task })
+  } catch (error) {
+    console.error('Failed to delete comment:', error)
+    sendError(res, ErrorCodes.INTERNAL_ERROR, 'Failed to delete comment', 500)
+  }
+})
+
+// ── 参考资料路由 ──
+
+router.post('/:id/references', async (req: Request, res: Response) => {
+  try {
+    const taskId = req.params.id as string
+    const existingTask = await taskService.getById(taskId)
+    if (!existingTask) {
+      sendError(res, ErrorCodes.NOT_FOUND, 'Task not found', 404)
+      return
+    }
+
+    const currentUser = await getPermissionUser(req.session.userId!)
+    if (!(await canOperateProject(currentUser, existingTask.projectId))) {
+      sendError(res, ErrorCodes.FORBIDDEN, 'Project membership required', 403)
+      return
+    }
+
+    const { type, url, title } = req.body
+
+    const referenceId = generateId()
+    await prisma.reference.create({
+      data: {
+        id: referenceId,
+        type: type || 'link',
+        url: url?.trim() || '',
+        title: title?.trim() || '',
+        authorId: req.session.userId!,
+        taskId
+      }
+    })
+
+    const task = await taskService.getById(taskId)
+    if (!task) {
+      sendError(res, ErrorCodes.NOT_FOUND, 'Task not found', 404)
+      return
+    }
+    broadcastProject('task:update', task, task.projectId)
+    await notificationService.notifyReference(taskId, { authorId: req.session.userId!, title: title?.trim(), url: url.trim() }, req.session.userId!)
+
+    sendSuccess(res, { task })
+  } catch (error) {
+    console.error('Failed to add reference:', error)
+    sendError(res, ErrorCodes.INTERNAL_ERROR, 'Failed to add reference', 500)
+  }
+})
+
+router.put('/:id/references/:referenceId', async (req: Request, res: Response) => {
+  try {
+    const taskId = req.params.id as string
+    const referenceId = req.params.referenceId as string
+    const existingTask = await taskService.getById(taskId)
+    if (!existingTask) {
+      sendError(res, ErrorCodes.NOT_FOUND, 'Task not found', 404)
+      return
+    }
+
+    const currentUser = await getPermissionUser(req.session.userId!)
+    const isProjectManager = await canManageProject(currentUser, existingTask.projectId)
+    const canOperate = await canOperateProject(currentUser, existingTask.projectId)
+
+    if (!canOperate) {
+      sendError(res, ErrorCodes.FORBIDDEN, 'Project membership required', 403)
+      return
+    }
+
+    const existingReference = existingTask.references.find((r: any) => r.id === referenceId)
+    if (!existingReference) {
+      sendError(res, ErrorCodes.NOT_FOUND, 'Reference not found', 404)
+      return
+    }
+
+    if (!isProjectManager && existingReference.authorId !== req.session.userId) {
+      sendError(res, ErrorCodes.FORBIDDEN, 'Can only edit your own references', 403)
+      return
+    }
+
+    const { type, url, title } = req.body
+
+    await prisma.reference.update({
+      where: { id: referenceId },
+      data: {
+        type: type || 'link',
+        url: url?.trim() || '',
+        title: title?.trim() || ''
+      }
+    })
+
+    const task = await taskService.getById(taskId)
+    if (!task) {
+      sendError(res, ErrorCodes.NOT_FOUND, 'Task not found', 404)
+      return
+    }
+    broadcastProject('task:update', task, task.projectId)
+
+    sendSuccess(res, { task })
+  } catch (error) {
+    console.error('Failed to update reference:', error)
+    sendError(res, ErrorCodes.INTERNAL_ERROR, 'Failed to update reference', 500)
+  }
+})
+
+router.delete('/:id/references/:referenceId', async (req: Request, res: Response) => {
+  try {
+    const taskId = req.params.id as string
+    const referenceId = req.params.referenceId as string
+    const existingTask = await taskService.getById(taskId)
+    if (!existingTask) {
+      sendError(res, ErrorCodes.NOT_FOUND, 'Task not found', 404)
+      return
+    }
+
+    const currentUser = await getPermissionUser(req.session.userId!)
+    if (!(await canManageProject(currentUser, existingTask.projectId))) {
+      sendError(res, ErrorCodes.FORBIDDEN, 'Project management permission required', 403)
+      return
+    }
+
+    const existingReference = existingTask.references.find((r: any) => r.id === referenceId)
+    if (!existingReference) {
+      sendError(res, ErrorCodes.NOT_FOUND, 'Reference not found', 404)
+      return
+    }
+
+    await prisma.reference.delete({ where: { id: referenceId } })
+
+    const task = await taskService.getById(taskId)
+    if (!task) {
+      sendError(res, ErrorCodes.NOT_FOUND, 'Task not found', 404)
+      return
+    }
+    broadcastProject('task:update', task, task.projectId)
+
+    sendSuccess(res, { task })
+  } catch (error) {
+    console.error('Failed to delete reference:', error)
+    sendError(res, ErrorCodes.INTERNAL_ERROR, 'Failed to delete reference', 500)
   }
 })
 
