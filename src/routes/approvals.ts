@@ -137,11 +137,17 @@ router.get('/', async (req: Request, res: Response) => {
     const userId = req.session.userId!
     const status = getQueryString(req.query.status)
     const projectId = getQueryString(req.query.projectId)
+    const scope = getQueryString(req.query.scope)
 
     const isPM = await isPmOrAdmin(userId)
     const where: any = {}
+    const listScope = scope === 'review' || scope === 'submitted'
+      ? scope
+      : isPM
+        ? 'review'
+        : 'submitted'
 
-    if (isPM) {
+    if (listScope === 'review') {
       where.assignedReviewerId = userId
     } else {
       where.requesterId = userId
