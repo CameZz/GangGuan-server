@@ -1,9 +1,10 @@
-﻿import { Router, Request, Response } from 'express'
+import { Router, Request, Response } from 'express'
 import { userService } from '../services/user.service'
 import { sendSuccess, sendError, ErrorCodes } from '../utils/response'
 import { requireAuth } from '../middleware/auth'
 import { prisma } from '../utils/prisma'
 import { broadcastAll } from '../ws/broadcast'
+import { WSMessageType } from '../types/enums'
 
 const router = Router()
 
@@ -71,7 +72,7 @@ router.post('/', async (req: Request, res: Response) => {
       isAdmin: isAdmin || false
     })
 
-    broadcastAll('user:create', user)
+    broadcastAll(WSMessageType.UserCreate, user)
     sendSuccess(res, { user }, 201)
   } catch (error) {
     console.error('Failed to create user:', error)
@@ -110,7 +111,7 @@ router.put('/:id', async (req: Request, res: Response) => {
 
     const user = await userService.update(id, updateData)
 
-    broadcastAll('user:update', user)
+    broadcastAll(WSMessageType.UserUpdate, user)
     sendSuccess(res, { user })
   } catch (error) {
     console.error('Failed to update user:', error)
@@ -142,7 +143,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
     }
 
     await userService.delete(id)
-    broadcastAll('user:delete', { id })
+    broadcastAll(WSMessageType.UserDelete, { id })
 
     sendSuccess(res, { message: 'User deleted' })
   } catch (error) {

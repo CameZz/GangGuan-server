@@ -5,6 +5,7 @@ import { requireAuth } from '../middleware/auth'
 import { prisma } from '../utils/prisma'
 import { broadcastAll, broadcastProject } from '../ws/broadcast'
 import { canManageProject, getPermissionUser } from '../services/project-permission.service'
+import { WSMessageType } from '../types/enums'
 
 const router = Router()
 
@@ -68,7 +69,7 @@ router.post('/:projectId/plannings', async (req: Request, res: Response) => {
     }
 
     const planning = await planningService.create(projectId, { name, color, deadline })
-    broadcastProject('planning:create', planning, projectId)
+    broadcastProject(WSMessageType.PlanningCreate, planning, projectId)
     sendSuccess(res, { planning }, 201)
   } catch (error) {
     console.error('Failed to create planning:', error)
@@ -94,7 +95,7 @@ router.put('/:projectId/plannings/:planningId', async (req: Request, res: Respon
 
     const { name, color, deadline } = req.body
     const planning = await planningService.update(id, { name, color, deadline })
-    broadcastProject('planning:update', planning, projectId)
+    broadcastProject(WSMessageType.PlanningUpdate, planning, projectId)
 
     sendSuccess(res, { planning })
   } catch (error) {
@@ -120,7 +121,7 @@ router.delete('/:projectId/plannings/:planningId', async (req: Request, res: Res
     }
 
     await planningService.delete(id)
-    broadcastProject('planning:delete', { id }, projectId)
+    broadcastProject(WSMessageType.PlanningDelete, { id }, projectId)
 
     sendSuccess(res, { message: 'Planning deleted' })
   } catch (error) {

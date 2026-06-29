@@ -7,6 +7,7 @@ import { broadcastAll, broadcastProject } from '../ws/broadcast'
 import { canManageProject, canOperateProject, getPermissionUser, validateAssigneesInProject } from '../services/project-permission.service'
 import { generateId } from '../utils/id'
 import { notificationService } from '../services/notification.service'
+import { WSMessageType } from '../types/enums'
 
 const router = Router()
 
@@ -158,7 +159,7 @@ router.post('/', async (req: Request, res: Response) => {
       comments
     }, req.session.userId)
 
-    broadcastProject('task:create', task, task.projectId)
+    broadcastProject(WSMessageType.TaskCreate, task, task.projectId)
     sendSuccess(res, { task }, 201)
   } catch (error) {
     console.error('Failed to create task:', error)
@@ -274,11 +275,11 @@ router.put('/:id', async (req: Request, res: Response) => {
 
     const task = await taskService.update(id, updateData, req.session.userId)
 
-    broadcastProject('task:update', task, task.projectId)
+    broadcastProject(WSMessageType.TaskUpdate, task, task.projectId)
 
     if (task.parentRequirementId) {
       const parent = await taskService.getById(task.parentRequirementId)
-      if (parent) broadcastProject('task:update', parent, parent.projectId)
+      if (parent) broadcastProject(WSMessageType.TaskUpdate, parent, parent.projectId)
     }
 
     sendSuccess(res, { task })
@@ -311,7 +312,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
     const projectId = existingTask.projectId
     await taskService.delete(id)
 
-    broadcastProject('task:delete', { id }, projectId)
+    broadcastProject(WSMessageType.TaskDelete, { id }, projectId)
     sendSuccess(res, { message: 'Task deleted' })
   } catch (error: any) {
     console.error('Failed to delete task:', error)
@@ -348,11 +349,11 @@ router.patch('/:id/move', async (req: Request, res: Response) => {
     }
 
     const task = await taskService.move(id, status, req.session.userId)
-    broadcastProject('task:update', task, task.projectId)
+    broadcastProject(WSMessageType.TaskUpdate, task, task.projectId)
 
     if (task.parentRequirementId) {
       const parent = await taskService.getById(task.parentRequirementId)
-      if (parent) broadcastProject('task:update', parent, parent.projectId)
+      if (parent) broadcastProject(WSMessageType.TaskUpdate, parent, parent.projectId)
     }
 
     sendSuccess(res, { task })
@@ -404,11 +405,11 @@ router.patch('/:id/phases/:phaseId/progress', async (req: Request, res: Response
       req.session.userId!
     )
 
-    broadcastProject('task:update', task, task.projectId)
+    broadcastProject(WSMessageType.TaskUpdate, task, task.projectId)
 
     if (task.parentRequirementId) {
       const parent = await taskService.getById(task.parentRequirementId)
-      if (parent) broadcastProject('task:update', parent, parent.projectId)
+      if (parent) broadcastProject(WSMessageType.TaskUpdate, parent, parent.projectId)
     }
 
     sendSuccess(res, { task })
@@ -456,7 +457,7 @@ router.post('/:id/comments', async (req: Request, res: Response) => {
       sendError(res, ErrorCodes.NOT_FOUND, 'Task not found', 404)
       return
     }
-    broadcastProject('task:update', task, task.projectId)
+    broadcastProject(WSMessageType.TaskUpdate, task, task.projectId)
     await notificationService.notifyComment(taskId, { authorId: req.session.userId!, content: content.trim() }, req.session.userId!)
 
     sendSuccess(res, { task })
@@ -512,7 +513,7 @@ router.put('/:id/comments/:commentId', async (req: Request, res: Response) => {
       sendError(res, ErrorCodes.NOT_FOUND, 'Task not found', 404)
       return
     }
-    broadcastProject('task:update', task, task.projectId)
+    broadcastProject(WSMessageType.TaskUpdate, task, task.projectId)
 
     sendSuccess(res, { task })
   } catch (error) {
@@ -550,7 +551,7 @@ router.delete('/:id/comments/:commentId', async (req: Request, res: Response) =>
       sendError(res, ErrorCodes.NOT_FOUND, 'Task not found', 404)
       return
     }
-    broadcastProject('task:update', task, task.projectId)
+    broadcastProject(WSMessageType.TaskUpdate, task, task.projectId)
 
     sendSuccess(res, { task })
   } catch (error) {
@@ -595,7 +596,7 @@ router.post('/:id/references', async (req: Request, res: Response) => {
       sendError(res, ErrorCodes.NOT_FOUND, 'Task not found', 404)
       return
     }
-    broadcastProject('task:update', task, task.projectId)
+    broadcastProject(WSMessageType.TaskUpdate, task, task.projectId)
     await notificationService.notifyReference(taskId, { authorId: req.session.userId!, title: title?.trim(), url: url.trim() }, req.session.userId!)
 
     sendSuccess(res, { task })
@@ -651,7 +652,7 @@ router.put('/:id/references/:referenceId', async (req: Request, res: Response) =
       sendError(res, ErrorCodes.NOT_FOUND, 'Task not found', 404)
       return
     }
-    broadcastProject('task:update', task, task.projectId)
+    broadcastProject(WSMessageType.TaskUpdate, task, task.projectId)
 
     sendSuccess(res, { task })
   } catch (error) {
@@ -689,7 +690,7 @@ router.delete('/:id/references/:referenceId', async (req: Request, res: Response
       sendError(res, ErrorCodes.NOT_FOUND, 'Task not found', 404)
       return
     }
-    broadcastProject('task:update', task, task.projectId)
+    broadcastProject(WSMessageType.TaskUpdate, task, task.projectId)
 
     sendSuccess(res, { task })
   } catch (error) {

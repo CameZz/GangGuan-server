@@ -62,8 +62,7 @@ const DEFAULT_PHASE_TEMPLATES = [
   { name: '初版实现', order: 2 },
   { name: '初步验收', order: 3 },
   { name: '终版完成', order: 4 },
-  { name: '最终验收', order: 5 },
-  { name: '完成', order: 6 }
+  { name: '最终验收', order: 5 }
 ]
 
 function normalizeStringArray(value: unknown): string[] {

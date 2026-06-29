@@ -1,3 +1,4 @@
+import { NotificationType } from '../types/enums'
 // NotificationService 单元测试
 
 // Mock prisma - must be defined before import due to jest.mock hoisting
@@ -180,12 +181,12 @@ describe('NotificationService', () => {
 
   describe('create', () => {
     it('should create a notification and send WebSocket to recipient', async () => {
-      const mockNotification = { id: 'n1', recipientId: 'user1', type: 'comment', title: 'Test' }
+      const mockNotification = { id: 'n1', recipientId: 'user1', type: NotificationType.Comment, title: 'Test' }
       mockCreate.mockResolvedValue(mockNotification)
 
       const result = await notificationService.create({
         recipientId: 'user1',
-        type: 'comment',
+        type: NotificationType.Comment,
         title: 'Test',
         body: 'Body',
       })
@@ -201,7 +202,7 @@ describe('NotificationService', () => {
 
       await notificationService.create({
         recipientId: 'user1',
-        type: 'behind_progress',
+        type: NotificationType.BehindProgress,
         title: 'Behind',
         body: 'Body',
         dedupeKey: 'key1',
@@ -219,7 +220,7 @@ describe('NotificationService', () => {
 
       const result = await notificationService.create({
         recipientId: 'user1',
-        type: 'comment',
+        type: NotificationType.Comment,
         title: 'Test',
         body: 'Body',
       })

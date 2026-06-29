@@ -3,6 +3,7 @@ import { sendSuccess, sendError, ErrorCodes } from '../utils/response'
 import { requireAuth } from '../middleware/auth'
 import { prisma } from '../utils/prisma'
 import { notificationService } from '../services/notification.service'
+import { NotificationType } from '../types/enums'
 import { canBeReviewerInProject, canOperateProject, canReviewInProject, getPermissionUser, validateAssigneesInProject } from '../services/project-permission.service'
 
 const router = Router()
@@ -117,7 +118,7 @@ router.post('/', async (req: Request, res: Response) => {
     if (assignedReviewerId !== requesterId) {
       await notificationService.create({
         recipientId: assignedReviewerId,
-        type: 'approval_submitted',
+        type: NotificationType.ApprovalSubmitted,
         title: '新任务申请',
         body: `${approval.requester.name} submitted task request: ${approval.title}`,
         actorId: requesterId,
@@ -248,7 +249,7 @@ router.post('/:id/approve', async (req: Request, res: Response) => {
 
     await notificationService.create({
       recipientId: approval.requesterId,
-      type: 'approval_approved',
+      type: NotificationType.ApprovalApproved,
       title: 'Request approved',
       body: `Your task request has been approved: ${approval.title}`,
       actorId: userId,
@@ -308,7 +309,7 @@ router.post('/:id/reject', async (req: Request, res: Response) => {
 
     await notificationService.create({
       recipientId: approval.requesterId,
-      type: 'approval_rejected',
+      type: NotificationType.ApprovalRejected,
       title: 'Request rejected',
       body: `Your task request has been rejected: ${approval.title}. Reason: ${reviewComment.trim()}`,
       actorId: userId,
@@ -365,7 +366,7 @@ router.post('/:id/cancel', async (req: Request, res: Response) => {
     if (approval.assignedReviewerId && approval.assignedReviewerId !== userId) {
       await notificationService.create({
         recipientId: approval.assignedReviewerId,
-        type: 'approval_cancelled',
+        type: NotificationType.ApprovalCancelled,
         title: 'Request cancelled',
         body: `${approval.requester?.name || 'User'} cancelled task request: ${approval.title}`,
         actorId: userId,

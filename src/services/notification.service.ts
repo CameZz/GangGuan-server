@@ -1,8 +1,7 @@
 import { Notification } from '@prisma/client'
 import { prisma } from '../utils/prisma'
 import { sendTo } from '../ws/broadcast'
-
-export type NotificationType = 'progress_update' | 'behind_progress' | 'comment' | 'reference' | 'approval_submitted' | 'approval_approved' | 'approval_rejected' | "approval_cancelled"
+import { NotificationType, WSMessageType } from '../types/enums'
 
 export interface CreateNotificationInput {
   recipientId: string
@@ -53,7 +52,7 @@ class NotificationService {
       where: { id: notificationId },
       data: { readAt: existing.readAt || new Date() }
     })
-    sendTo(userId, 'notification:update', notification)
+    sendTo(userId, WSMessageType.NotificationUpdate, notification)
     return notification
   }
 
@@ -63,7 +62,7 @@ class NotificationService {
       where: { recipientId: userId, readAt: null },
       data: { readAt: now }
     })
-    sendTo(userId, 'notification:read-all', { readAt: now.toISOString(), count: result.count })
+    sendTo(userId, WSMessageType.NotificationReadAll, { readAt: now.toISOString(), count: result.count })
     return result.count
   }
 
@@ -77,7 +76,7 @@ class NotificationService {
           })
         : await prisma.notification.create({ data: this.toCreateData(input) })
 
-      sendTo(input.recipientId, 'notification:create', notification)
+      sendTo(input.recipientId, WSMessageType.NotificationCreate, notification)
       return notification
     } catch (error) {
       console.error('创建通知失败:', error)
@@ -112,7 +111,7 @@ class NotificationService {
     if (recipients.length === 0) return
 
     await this.createForRecipients(recipients, {
-      type: 'comment',
+      type: NotificationType.Comment,
       title: '新评论通知',
       body: comment.content || '有人评论了你的任务',
       actorId,
@@ -133,7 +132,7 @@ class NotificationService {
     if (recipients.length === 0) return
 
     await this.createForRecipients(recipients, {
-      type: 'reference',
+      type: NotificationType.Reference,
       title: '新增参考资源',
       body: reference.title || reference.url || '有人添加了新的参考资源',
       actorId,

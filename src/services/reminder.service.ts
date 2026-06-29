@@ -2,6 +2,7 @@ import { TaskPhase } from '@prisma/client'
 import { config } from '../config'
 import { prisma } from '../utils/prisma'
 import { notificationService } from './notification.service'
+import { NotificationType } from '../types/enums'
 
 interface WorkdayConfig {
   nonWorkdays?: string[]
@@ -179,7 +180,7 @@ class ReminderService {
       if (!isBehindProgress(phase, now)) continue
       await notificationService.create({
         recipientId: phase.assigneeId!,
-        type: 'behind_progress',
+        type: NotificationType.BehindProgress,
         title: '任务进度落后',
         body: `${phase.task.title} / ${phase.name} 当前进度低于计划进度`,
         projectId: phase.task.projectId,
@@ -215,7 +216,7 @@ class ReminderService {
 
       await notificationService.create({
         recipientId: phase.assigneeId,
-        type: 'progress_update',
+        type: NotificationType.ProgressUpdate,
         title: '请更新任务进度',
         body: `${phase.task.title} / ${phase.name} 今天还没有提交进度`,
         projectId: phase.task.projectId,

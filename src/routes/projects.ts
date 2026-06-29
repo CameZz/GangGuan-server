@@ -5,6 +5,7 @@ import { requireAuth } from '../middleware/auth'
 import { prisma } from '../utils/prisma'
 import { broadcastAll } from '../ws/broadcast'
 import { canBeReviewerInProject, canManageProject, getPermissionUser } from '../services/project-permission.service'
+import { WSMessageType } from '../types/enums'
 
 const router = Router()
 
@@ -48,7 +49,7 @@ router.put('/:id/members', async (req: Request, res: Response) => {
     const members = await projectService.replaceMembers(id, req.body.userIds)
     const project = await projectService.getById(id)
 
-    if (project) broadcastAll('project:update', project)
+    if (project) broadcastAll(WSMessageType.ProjectUpdate, project)
     sendSuccess(res, { members })
   } catch (error: any) {
     console.error('Failed to update project members:', error)
@@ -137,7 +138,7 @@ router.post('/', async (req: Request, res: Response) => {
       phaseTemplates
     })
 
-    broadcastAll('project:create', project)
+    broadcastAll(WSMessageType.ProjectCreate, project)
     sendSuccess(res, { project }, 201)
   } catch (error) {
     console.error('Failed to create project:', error)
@@ -176,7 +177,7 @@ router.put('/:id', async (req: Request, res: Response) => {
       extraWorkdays
     })
 
-    broadcastAll('project:update', project)
+    broadcastAll(WSMessageType.ProjectUpdate, project)
     sendSuccess(res, { project })
   } catch (error) {
     console.error('Failed to update project:', error)
@@ -202,7 +203,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
 
     await projectService.delete(id)
 
-    broadcastAll('project:delete', { id })
+    broadcastAll(WSMessageType.ProjectDelete, { id })
     sendSuccess(res, { message: 'Project deleted' })
   } catch (error) {
     console.error('Failed to delete project:', error)

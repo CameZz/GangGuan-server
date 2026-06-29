@@ -2,12 +2,7 @@ import { Prisma, ReferenceType, TaskHistory, TaskProgressHistory } from '@prisma
 import { prisma } from '../utils/prisma'
 import { generateId } from '../utils/id'
 import { notificationService } from './notification.service'
-
-type TaskStatus = 'todo' | 'in-progress' | 'done' | 'abandoned'
-type TaskPriority = 'low' | 'medium' | 'high'
-type TaskItemType = 'requirement' | 'task'
-type TaskPhaseStatus = 'pending' | 'in-progress' | 'done'
-type TaskStage = 'filed' | 'designing' | 'initial' | 'preliminary' | 'final' | 'finalAcceptance' | 'completed'
+import { TaskItemType, TaskPhaseStatus, TaskPriority, TaskStage, TaskStatus } from '../types/enums'
 
 const taskWithRelationsInclude = {
   phases: { orderBy: { order: 'asc' as const } },
@@ -154,11 +149,11 @@ export class TaskService {
           parentRequirementId: null,
           title,
           description,
-          status: 'todo',
+          status: TaskStatus.Todo,
           priority,
           dueDate: null,
           assigneeId: null,
-          stage: 'filed',
+          stage: TaskStage.Filed,
           currentPhaseId: null,
           projectId,
           planningId: planningId || null,
@@ -183,13 +178,13 @@ export class TaskService {
           order: template.order,
           assigneeId: null,
           progress: 0,
-          status: 'pending' as TaskPhaseStatus,
+          status: TaskPhaseStatus.Pending,
           startTime: null,
           endTime: null
         }))
 
     const currentPhase = this.getCurrentPhase(phases)
-    const status = this.deriveStatusFromPhases(phases, 'todo')
+    const status = this.deriveStatusFromPhases(phases, TaskStatus.Todo)
     const stage = this.deriveStageFromPhase(currentPhase)
 
     return this.withTemplateName(await prisma.task.create({
@@ -247,7 +242,7 @@ export class TaskService {
           ? this.deriveStatusFromPhases(phases, (data.status || existingTask.status) as TaskStatus)
           : (data.status || existingTask.status) as TaskStatus
     const nextStage = isRequirement
-      ? 'filed'
+      ? TaskStage.Filed
       : data.phases !== undefined
         ? this.deriveStageFromPhase(currentPhase)
         : (data.stage || existingTask.stage) as TaskStage
@@ -516,13 +511,13 @@ export class TaskService {
   }
 
   private getCurrentPhase(phases: PhaseLike[]): PhaseLike | null {
-    return phases.find(phase => phase.status !== 'done') || phases[phases.length - 1] || null
+    return phases.find(phase => phase.status !== TaskPhaseStatus.Done) || phases[phases.length - 1] || null
   }
 
   private getPhaseStatus(progress: number): TaskPhaseStatus {
-    if (progress <= 0) return 'pending'
-    if (progress >= 100) return 'done'
-    return 'in-progress'
+    if (progress <= 0) return TaskPhaseStatus.Pending
+    if (progress >= 100) return TaskPhaseStatus.Done
+    return TaskPhaseStatus.InProgress
   }
 
   private normalizeTaskPhaseInputs(phases: UpdateTaskPhaseParams[] = []): NormalizedTaskPhaseInput[] {
@@ -591,21 +586,21 @@ export class TaskService {
   }
 
   private deriveStageFromPhase(phase: PhaseLike | null): TaskStage {
-    if (!phase) return 'filed'
-    const byOrder: TaskStage[] = ['filed', 'designing', 'initial', 'preliminary', 'final', 'finalAcceptance', 'completed']
+    if (!phase) return TaskStage.Filed
+    const byOrder: TaskStage[] = [TaskStage.Filed, TaskStage.Designing, TaskStage.Initial, TaskStage.Preliminary, TaskStage.Final, TaskStage.FinalAcceptance, TaskStage.Completed]
     const order = Number(phase.order)
     if (Number.isFinite(order) && byOrder[order]) return byOrder[order]
-    return 'filed'
+    return TaskStage.Filed
   }
 
   private deriveStatusFromPhases(phases: PhaseLike[], currentStatus: TaskStatus): TaskStatus {
-    if (currentStatus === 'abandoned') return 'abandoned'
+    if (currentStatus === TaskStatus.Abandoned) return TaskStatus.Abandoned
     if (phases.length === 0) return currentStatus
 
     const progresses = phases.map(phase => Math.max(0, Math.min(100, Math.round(Number(phase.progress ?? 0)))))
-    if (progresses.every(progress => progress === 0)) return 'todo'
-    if (progresses.every(progress => progress === 100)) return 'done'
-    return 'in-progress'
+    if (progresses.every(progress => progress === 0)) return TaskStatus.Todo
+    if (progresses.every(progress => progress === 100)) return TaskStatus.Done
+    return TaskStatus.InProgress
   }
 
   // 根据子任务状态推导需求单状态（忽略 abandoned 的子任务）
@@ -614,11 +609,11 @@ export class TaskService {
       where: { parentRequirementId: requirementId },
       select: { status: true }
     })
-    const active = children.filter(c => c.status !== 'abandoned')
-    if (active.length === 0) return 'done'
-    if (active.every(c => c.status === 'todo')) return 'todo'
-    if (active.every(c => c.status === 'done')) return 'done'
-    return 'in-progress'
+    const active = children.filter(c => c.status !== TaskStatus.Abandoned)
+    if (active.length === 0) return TaskStatus.Done
+    if (active.every(c => c.status === TaskStatus.Todo)) return TaskStatus.Todo
+    if (active.every(c => c.status === TaskStatus.Done)) return TaskStatus.Done
+    return TaskStatus.InProgress
   }
 
   // 子任务状态变化后，同步更新父需求单状态（内部使用）

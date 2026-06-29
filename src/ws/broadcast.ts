@@ -2,16 +2,7 @@
 
 import { connectionManager } from './connection'
 import { projectService } from '../services/project.service'
-
-// 消息类型
-type WSMessageType =
-  | 'task:create' | 'task:update' | 'task:delete'
-  | 'project:create' | 'project:update' | 'project:delete'
-  | 'member:create' | 'member:update' | 'member:delete'
-  | 'planning:create' | 'planning:update' | 'planning:delete'
-  | 'user:login' | 'user:logout' | 'user:create' | 'user:update' | 'user:delete'
-  | 'sync:init' | 'sync:update'
-  | 'notification:create' | 'notification:update' | 'notification:read-all'
+import type { WSMessageType } from '../types/enums'
 
 // 创建消息
 function createMessage(type: WSMessageType, payload: any): string {

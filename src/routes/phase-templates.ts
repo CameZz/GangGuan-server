@@ -5,6 +5,7 @@ import { sendSuccess, sendError, ErrorCodes } from '../utils/response'
 import { requireAuth } from '../middleware/auth'
 import { broadcastAll, broadcastProject } from '../ws/broadcast'
 import { canManageProject, getPermissionUser } from '../services/project-permission.service'
+import { WSMessageType } from '../types/enums'
 
 const router = Router()
 
@@ -45,7 +46,7 @@ router.post('/:projectId/phase-templates', async (req: Request, res: Response) =
 
     const template = await phaseTemplateService.create(projectId, { name, enabled })
     const project = await projectService.getById(projectId)
-    if (project) broadcastProject('project:update', project, projectId)
+    if (project) broadcastProject(WSMessageType.ProjectUpdate, project, projectId)
     sendSuccess(res, { template }, 201)
   } catch (error) {
     console.error('Failed to create phase template:', error)
@@ -67,7 +68,7 @@ router.put('/:projectId/phase-templates/reorder', async (req: Request, res: Resp
 
     const templates = await phaseTemplateService.reorder(projectId, templateIds)
     const project = await projectService.getById(projectId)
-    if (project) broadcastProject('project:update', project, projectId)
+    if (project) broadcastProject(WSMessageType.ProjectUpdate, project, projectId)
     sendSuccess(res, { templates })
   } catch (error) {
     console.error('Failed to reorder phase templates:', error)
@@ -90,7 +91,7 @@ router.put('/:projectId/phase-templates/:templateId', async (req: Request, res: 
     const { name, order, enabled } = req.body
     const template = await phaseTemplateService.update(projectId, templateId, { name, order, enabled })
     const project = await projectService.getById(projectId)
-    if (project) broadcastProject('project:update', project, projectId)
+    if (project) broadcastProject(WSMessageType.ProjectUpdate, project, projectId)
 
     sendSuccess(res, { template })
   } catch (error) {
@@ -113,7 +114,7 @@ router.delete('/:projectId/phase-templates/:templateId', async (req: Request, re
 
     await phaseTemplateService.delete(projectId, templateId)
     const project = await projectService.getById(projectId)
-    if (project) broadcastProject('project:update', project, projectId)
+    if (project) broadcastProject(WSMessageType.ProjectUpdate, project, projectId)
 
     sendSuccess(res, { message: 'Phase template deleted' })
   } catch (error) {
